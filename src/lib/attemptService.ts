@@ -12,7 +12,7 @@ export interface StoredAttemptRecord {
   student_email?: string
   status: 'completed' | 'in_progress' | 'abandoned'
   started_at: string
-  completed_at: string
+  completed_at?: string
   total_time_seconds: number
   percentage: number
   correct_count: number

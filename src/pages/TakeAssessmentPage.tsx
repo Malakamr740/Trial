@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import StudentPostAssessmentSurveyModal from '../components/StudentPostAssessmentSurveyModal'
 import MathRenderer from '../components/MathRenderer'
 import {
@@ -15,6 +15,11 @@ import {
   CheckCircle2,
   AlertCircle,
   HelpCircle,
+  Sparkles,
+  BookOpen,
+  Lightbulb,
+  RotateCcw,
+  Check,
 } from 'lucide-react'
 import {
   assessmentService,
@@ -28,6 +33,14 @@ import { attemptService } from '../lib/attemptService'
 export const TakeAssessmentPage: React.FC = () => {
   const { attemptId } = useParams<{ attemptId: string }>()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+
+  // Mode: Learning / Practice Mode (interactive explanations & instant feedback) vs Exam Mode
+  const [isLearningMode, setIsLearningMode] = useState<boolean>(() => {
+    const m = searchParams.get('mode')
+    if (m === 'exam') return false
+    return true // Default to rich interactive Learning Mode
+  })
 
   const [assessment, setAssessment] = useState<Assessment | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -91,9 +104,9 @@ export const TakeAssessmentPage: React.FC = () => {
     loadTargetAssessment()
   }, [attemptId])
 
-  // Active Section Timer
+  // Active Section Timer (runs in Exam Mode, relaxed/untimed pace in Learning Mode)
   useEffect(() => {
-    if (!assessment || isOnBreak) return
+    if (!assessment || isOnBreak || isLearningMode) return
     const activeSec = assessment.sections[currentSectionIdx]
     if (!activeSec || !activeSec.settings.timingEnabled) return
 
@@ -109,7 +122,7 @@ export const TakeAssessmentPage: React.FC = () => {
     }, 1000)
 
     return () => clearInterval(timer)
-  }, [assessment, currentSectionIdx, isOnBreak])
+  }, [assessment, currentSectionIdx, isOnBreak, isLearningMode])
 
   // Break Timer
   useEffect(() => {
@@ -371,7 +384,7 @@ export const TakeAssessmentPage: React.FC = () => {
       <div className="max-w-2xl w-full bg-white rounded-3xl p-6 sm:p-8 border border-slate-200 shadow-2xs space-y-6">
         {/* Top Header: Section Info, Question Count, Countdown Timer & Calculator */}
         <div className="flex items-center justify-between pb-4 border-b border-slate-100 flex-wrap gap-2">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs font-bold text-blue-700 bg-blue-50 px-2.5 py-1 rounded-xl border border-blue-100">
               {currentSection.title}
             </span>
@@ -380,7 +393,22 @@ export const TakeAssessmentPage: React.FC = () => {
             </span>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Interactive Learning Mode Toggle Button */}
+            <button
+              type="button"
+              onClick={() => setIsLearningMode((prev) => !prev)}
+              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold transition shadow-2xs cursor-pointer border ${
+                isLearningMode
+                  ? 'bg-emerald-600 text-white border-emerald-700 hover:bg-emerald-700'
+                  : 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100'
+              }`}
+              title="Click to toggle between Learning Mode (instant solutions & step-by-step guidance) and Standard Timed Exam"
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              <span>{isLearningMode ? '🎓 Learning Mode Active' : '⏱️ Switch to Learning Mode'}</span>
+            </button>
+
             {/* Calculator Button (only if calculator is allowed in this section) */}
             {currentSection.settings.calculatorAllowed ? (
               <button
@@ -402,30 +430,40 @@ export const TakeAssessmentPage: React.FC = () => {
               </span>
             )}
 
-            {/* Section Timer */}
+            {/* Section Timer (runs in Exam Mode, untimed in Learning Mode) */}
             {currentSection.settings.timingEnabled && (
               <span
                 className={`text-xs font-mono font-bold px-2.5 py-1 rounded-xl flex items-center gap-1 ${
-                  sectionSecondsLeft < 300
+                  isLearningMode
+                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                    : sectionSecondsLeft < 300
                     ? 'bg-rose-50 text-rose-700 border border-rose-200 animate-pulse'
                     : 'bg-blue-50 text-blue-700 border border-blue-100'
                 }`}
+                title={isLearningMode ? 'Learning Mode: Untimed Practice Pace' : 'Exam Countdown'}
               >
                 <Clock className="h-3.5 w-3.5" />
-                <span>{formatTimer(sectionSecondsLeft)}</span>
+                <span>{isLearningMode ? 'Untimed Practice' : formatTimer(sectionSecondsLeft)}</span>
               </span>
             )}
           </div>
         </div>
 
-        {/* Section Policy Notice Banner */}
-        <div className="flex items-center justify-between text-[11px] text-slate-500 bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+        {/* Section Policy & Mode Notice Banner */}
+        <div className="flex items-center justify-between text-[11px] text-slate-500 bg-slate-50 p-2.5 rounded-xl border border-slate-100 flex-wrap gap-2">
           <span className="flex items-center gap-1 font-medium text-slate-700">
             <Layers className="h-3 w-3 text-indigo-500" />
             Section {currentSectionIdx + 1} of {assessment.sections.length}
           </span>
-          <span>
-            {currentSection.settings.calculatorAllowed ? 'Calculator Allowed' : 'No Calculator Permitted'}
+          <span className="flex items-center gap-2">
+            <span>
+              {currentSection.settings.calculatorAllowed ? 'Calculator Allowed' : 'No Calculator Permitted'}
+            </span>
+            {isLearningMode && (
+              <span className="font-semibold text-emerald-700 bg-emerald-100/70 px-2 py-0.5 rounded-md">
+                🎓 Instant Explanations Enabled
+              </span>
+            )}
           </span>
         </div>
 
@@ -474,36 +512,158 @@ export const TakeAssessmentPage: React.FC = () => {
           </div>
         )}
 
-        {/* Multiple Choice Options */}
+        {/* Multiple Choice Options with Learning Feedback */}
         {resolvedQuestion.choices && resolvedQuestion.choices.length > 0 && (
           <div className="space-y-2.5">
             {resolvedQuestion.choices.map((opt, i) => {
               const isSelected = currentAnswer === i
+              const isCorrectChoice = opt.isCorrect
+              const hasAnswered = currentAnswer !== undefined
+
+              let btnClasses = 'border-slate-200 hover:bg-slate-50 text-slate-700'
+              let badgeClasses = 'bg-slate-100 text-slate-600'
+
+              if (isLearningMode && hasAnswered) {
+                if (isSelected && isCorrectChoice) {
+                  btnClasses = 'border-emerald-600 bg-emerald-50 text-emerald-950 ring-2 ring-emerald-500/30'
+                  badgeClasses = 'bg-emerald-600 text-white'
+                } else if (isSelected && !isCorrectChoice) {
+                  btnClasses = 'border-rose-500 bg-rose-50 text-rose-950 ring-2 ring-rose-500/30'
+                  badgeClasses = 'bg-rose-600 text-white'
+                } else if (isCorrectChoice) {
+                  btnClasses = 'border-emerald-500/70 bg-emerald-50/40 text-emerald-900 border-dashed'
+                  badgeClasses = 'bg-emerald-100 text-emerald-800'
+                }
+              } else if (isSelected) {
+                btnClasses = 'border-blue-600 bg-blue-50/50 text-blue-900 ring-2 ring-blue-500/20'
+                badgeClasses = 'bg-blue-600 text-white'
+              }
 
               return (
                 <button
                   key={i}
                   type="button"
                   onClick={() => handleSelectAnswer(i)}
-                  className={`w-full text-left p-3.5 rounded-2xl border text-xs font-medium transition cursor-pointer flex items-center gap-3 ${
-                    isSelected
-                      ? 'border-blue-600 bg-blue-50/50 text-blue-900 ring-2 ring-blue-500/20'
-                      : 'border-slate-200 hover:bg-slate-50 text-slate-700'
-                  }`}
+                  className={`w-full text-left p-3.5 rounded-2xl border text-xs font-medium transition cursor-pointer flex items-center gap-3 ${btnClasses}`}
                 >
                   <span
-                    className={`w-6 h-6 rounded-lg flex items-center justify-center font-bold text-xs shrink-0 ${
-                      isSelected ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600'
-                    }`}
+                    className={`w-6 h-6 rounded-lg flex items-center justify-center font-bold text-xs shrink-0 ${badgeClasses}`}
                   >
                     {String.fromCharCode(65 + i)}
                   </span>
                   <span className="flex-1">
                     <MathRenderer text={opt.text} />
                   </span>
+                  {isLearningMode && hasAnswered && isCorrectChoice && (
+                    <span className="text-[11px] font-bold text-emerald-700 bg-emerald-100/80 px-2 py-0.5 rounded-lg shrink-0 flex items-center gap-1">
+                      <Check className="h-3 w-3 stroke-[3]" />
+                      Correct Answer
+                    </span>
+                  )}
+                  {isLearningMode && hasAnswered && isSelected && !isCorrectChoice && (
+                    <span className="text-[11px] font-bold text-rose-700 bg-rose-100/80 px-2 py-0.5 rounded-lg shrink-0 flex items-center gap-1">
+                      <X className="h-3 w-3 stroke-[3]" />
+                      Incorrect Choice
+                    </span>
+                  )}
                 </button>
               )
             })}
+          </div>
+        )}
+
+        {/* Interactive Step-by-Step Learning & Solution Card */}
+        {isLearningMode && currentAnswer !== undefined && (
+          <div className="rounded-2xl border border-slate-200/90 p-4 sm:p-5 space-y-3.5 bg-gradient-to-b from-white to-slate-50 shadow-xs">
+            {/* Header: Feedback Banner & Taxonomy Badges */}
+            <div className="flex items-center justify-between gap-2 flex-wrap pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                {resolvedQuestion.choices[currentAnswer as number]?.isCorrect ? (
+                  <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-1 rounded-xl">
+                    <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                    Correct! Outstanding work!
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 text-xs font-bold text-rose-700 bg-rose-50 border border-rose-200 px-3 py-1 rounded-xl">
+                    <AlertCircle className="h-4 w-4 text-rose-600" />
+                    Not quite – Study the solution below or try again
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {resolvedQuestion.domain && (
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-100">
+                    {resolvedQuestion.domain}
+                  </span>
+                )}
+                {resolvedQuestion.lesson && (
+                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-slate-100 text-slate-600">
+                    {resolvedQuestion.lesson}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Selected Option Rationale */}
+            {resolvedQuestion.choices[currentAnswer as number]?.rationale && (
+              <div className="text-xs text-slate-700 bg-slate-100/80 p-3 rounded-xl border border-slate-200/80 space-y-0.5">
+                <span className="font-bold text-slate-900">Selection Analysis: </span>
+                <MathRenderer text={resolvedQuestion.choices[currentAnswer as number].rationale!} />
+              </div>
+            )}
+
+            {/* Step-by-Step Derivation */}
+            {resolvedQuestion.explanation && (
+              <div className="space-y-1.5 bg-blue-50/50 p-4 rounded-xl border border-blue-100">
+                <div className="text-xs font-bold text-blue-900 flex items-center gap-1.5">
+                  <BookOpen className="h-4 w-4 text-blue-600" />
+                  <span>Step-by-Step Mathematical Solution</span>
+                </div>
+                <div className="text-xs text-slate-700 leading-relaxed pt-1">
+                  <MathRenderer text={resolvedQuestion.explanation} />
+                </div>
+              </div>
+            )}
+
+            {/* Common Misconception Callout */}
+            {resolvedQuestion.commonMisconception && (
+              <div className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-50/90 border border-amber-200 text-xs text-amber-900">
+                <Lightbulb className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-bold">Common Misconception & Trap: </span>
+                  <MathRenderer text={resolvedQuestion.commonMisconception} />
+                </div>
+              </div>
+            )}
+
+            {/* Interactive Actions: Try Again & Continue */}
+            <div className="flex items-center justify-between pt-1">
+              {!resolvedQuestion.choices[currentAnswer as number]?.isCorrect ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAnswers((prev) => {
+                      const next = { ...prev }
+                      delete next[currentQuestionItem.id]
+                      return next
+                    })
+                  }}
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 transition cursor-pointer"
+                >
+                  <RotateCcw className="h-3.5 w-3.5 text-slate-500" />
+                  <span>Try Another Choice</span>
+                </button>
+              ) : (
+                <span className="text-[11px] text-emerald-700 font-medium">
+                  Concept mastered! Click next when ready.
+                </span>
+              )}
+
+              <span className="text-[11px] text-slate-400 italic ml-auto">
+                Learning & Practice Mode Active
+              </span>
+            </div>
           </div>
         )}
 

@@ -590,6 +590,12 @@ export const INITIAL_SEED_QUESTIONS: QuestionBankItem[] = [
 let _questionsCache: QuestionBankItem[] = []
 let _hasLoadedQuestions = false
 
+let _taxonomyCache: TaxonomyRegistry = CURRICULUM_TAXONOMY
+let _hasLoadedTaxonomy = false
+
+let _collectionsCache: QuestionCollection[] = []
+let _hasLoadedCollections = false
+
 // Clear any old browser storage
 if (typeof window !== 'undefined') {
   try {

@@ -161,7 +161,10 @@ export const ReportSettingsPage: React.FC = () => {
   }
 
   const handlePreviewReport = () => {
-    sessionStorage.setItem('math_diag_report_preview', JSON.stringify(template))
+    try {
+      localStorage.setItem('math_diag_report_preview', JSON.stringify(template))
+      sessionStorage.setItem('math_diag_report_preview', JSON.stringify(template))
+    } catch {}
   }
 
   const handleUpdateRubricTier = (index: number, updates: Partial<RubricTier>) => {
@@ -305,7 +308,6 @@ export const ReportSettingsPage: React.FC = () => {
         <div className="flex items-center gap-2">
           <Link
             to="/report/demo?preview=1"
-            target="_blank"
             onClick={handlePreviewReport}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 text-xs font-semibold shadow-2xs transition"
           >

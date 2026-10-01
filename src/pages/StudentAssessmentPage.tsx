@@ -13,6 +13,7 @@ import {
   Coffee,
   CheckCircle2,
   GraduationCap,
+  Sparkles,
 } from 'lucide-react'
 
 export const StudentAssessmentPage: React.FC = () => {
@@ -20,6 +21,7 @@ export const StudentAssessmentPage: React.FC = () => {
   const navigate = useNavigate()
 
   const [assessment, setAssessment] = useState<Assessment | null>(null)
+  const [selectedMode, setSelectedMode] = useState<'learning' | 'exam'>('learning')
   const [formData, setFormData] = useState<Record<string, string>>({})
   const [intakeFields, setIntakeFields] = useState<
     Array<{
@@ -38,10 +40,14 @@ export const StudentAssessmentPage: React.FC = () => {
   useEffect(() => {
     async function loadData() {
       if (!assessmentId) return
-      let data = assessmentService.getAssessmentById(assessmentId)
+      let targetId = assessmentId
+      let data = assessmentService.getAssessmentById(targetId)
       if (!data) {
         const list = await assessmentService.fetchAssessmentsFromDatabase()
-        data = list.find((a) => a.id === assessmentId) || null
+        data = list.find((a) => a.id === targetId) || null
+        if (!data && (targetId === 'standard' || targetId === 'sample' || targetId === 'demo')) {
+          data = list[0] || null
+        }
       }
 
       if (data) {
@@ -149,7 +155,7 @@ export const StudentAssessmentPage: React.FC = () => {
       started_at: new Date().toISOString(),
     })
 
-    navigate(`/take/${attemptId}`)
+    navigate(`/take/${attemptId}?mode=${selectedMode}`)
   }
 
   if (errorMessage && !assessment) {
@@ -353,14 +359,77 @@ export const StudentAssessmentPage: React.FC = () => {
             )}
           </div>
 
-          <div className="pt-4 border-t border-slate-100 flex justify-end">
+          {/* Experience Mode Selector: Interactive Learning Mode vs Timed Exam */}
+          <div className="pt-2 border-t border-slate-100 space-y-2.5">
+            <label className="block text-xs font-bold text-slate-800">
+              Select Your Assessment Experience
+            </label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => setSelectedMode('learning')}
+                className={`p-4 rounded-2xl border text-left transition cursor-pointer flex flex-col justify-between ${
+                  selectedMode === 'learning'
+                    ? 'border-emerald-600 bg-emerald-50/70 ring-2 ring-emerald-500/20'
+                    : 'border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs font-bold text-emerald-900 flex items-center gap-1.5">
+                    <Sparkles className="h-4 w-4 text-emerald-600" />
+                    🎓 Interactive Learning Mode
+                  </span>
+                  <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
+                    Recommended
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-600 leading-relaxed">
+                  Instant step-by-step LaTeX math solutions, choice rationales, error-trap advice, and untimed practice.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSelectedMode('exam')}
+                className={`p-4 rounded-2xl border text-left transition cursor-pointer flex flex-col justify-between ${
+                  selectedMode === 'exam'
+                    ? 'border-blue-600 bg-blue-50/70 ring-2 ring-blue-500/20'
+                    : 'border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                    <Clock className="h-4 w-4 text-blue-600" />
+                    ⏱️ Timed Proctored Exam
+                  </span>
+                  <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">
+                    Formal
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-600 leading-relaxed">
+                  Real examination conditions with countdown timer, silent answers, and comprehensive score report upon completion.
+                </p>
+              </button>
+            </div>
+          </div>
+
+          <div className="pt-3 border-t border-slate-100 flex justify-end">
             <button
               type="submit"
               disabled={submitting}
-              style={{ backgroundColor: '#2563eb', color: '#ffffff' }}
-              className="inline-flex items-center gap-2 px-6 py-3 rounded-2xl bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 disabled:opacity-50 transition shadow-xs cursor-pointer"
+              style={{
+                backgroundColor: selectedMode === 'learning' ? '#059669' : '#2563eb',
+                color: '#ffffff',
+              }}
+              className={`inline-flex items-center gap-2 px-6 py-3 rounded-2xl text-white text-xs font-bold transition shadow-xs cursor-pointer ${
+                selectedMode === 'learning'
+                  ? 'bg-emerald-600 hover:bg-emerald-700'
+                  : 'bg-blue-600 hover:bg-blue-700'
+              } disabled:opacity-50`}
             >
-              <span>Begin Assessment</span>
+              <span>
+                {selectedMode === 'learning' ? 'Start Interactive Learning' : 'Begin Timed Assessment'}
+              </span>
               <ArrowRight className="h-4 w-4" />
             </button>
           </div>

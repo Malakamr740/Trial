@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
-import { supabase } from '../lib/supabaseClient'
+import { supabase, isSupabaseConfigured } from '../lib/supabaseClient'
 import { TaxonomyTree } from '../components/Reports/TaxonomyTree'
 import QuestionReviewCard from '../components/Reports/QuestionReviewCard'
 import DomainCard from '../components/Reports/DomainCard'
@@ -17,7 +17,7 @@ import {
 } from '../lib/diagnosticAnalytics'
 import type { CourseItem, QuestionReviewItem, ReportData, TaxonomyType } from '../components/Reports/Types'
 import { surveyService, type ActionPlan } from '../lib/surveyService'
-import { Sparkles, CheckCircle2 } from 'lucide-react'
+import { Sparkles, CheckCircle2, Lock, ArrowLeft } from 'lucide-react'
 import { attemptService } from '../lib/attemptService'
 import {
   reportTemplateService,
@@ -36,11 +36,315 @@ function formatTime(s: number) {
   return m > 0 ? `${m}m ${s % 60}s` : `${s}s`
 }
 
+function createSamplePreviewReport(templateConfig?: ReportTemplateConfig): ReportData {
+  const currentTemplate = templateConfig || reportTemplateService.getTemplateForAssessment()
+
+  const sampleQuestions: QuestionReviewItem[] = [
+    {
+      question_id: 'sample-q1',
+      content_blocks: [{ type: 'text', content: 'If $2x - 2 = 3x$, what is the value of $x + 2$?' }],
+      explanation_blocks: [
+        {
+          type: 'text',
+          content: 'Solve for $x$: $2x - 2 = 3x \\implies 3x - 2x = -2 \\implies x = -2$. Then substitute into $x + 2 = -2 + 2 = 0$. The correct choice is C.',
+        },
+      ],
+      difficulty: 'easy',
+      answer_type_code: 'MCQ',
+      points_possible: 1,
+      points_earned: 1,
+      is_correct: true,
+      status: 'correct',
+      is_answered: true,
+      time_spent_seconds: 45,
+      student_answer: { choice_id: 'C' },
+      category_name: 'Algebra & Functions',
+      lesson_name: 'Single-Variable Linear Equations',
+      skill_name: 'Linear Equation Solving',
+      choices: [
+        { id: 'A', content_blocks: [{ type: 'text', content: '-4' }], is_correct: false },
+        { id: 'B', content_blocks: [{ type: 'text', content: '-2' }], is_correct: false },
+        { id: 'C', content_blocks: [{ type: 'text', content: '0' }], is_correct: true },
+        { id: 'D', content_blocks: [{ type: 'text', content: '2' }], is_correct: false },
+      ],
+    },
+    {
+      question_id: 'sample-q2',
+      content_blocks: [{ type: 'text', content: 'Solve the system of equations: $2x + y = 7$ and $x - y = 2$. What is the value of $x$?' }],
+      explanation_blocks: [
+        {
+          type: 'text',
+          content: 'Add the two equations directly: $(2x + y) + (x - y) = 7 + 2 \\implies 3x = 9 \\implies x = 3$. Then $y = 1$. The correct choice is A.',
+        },
+      ],
+      difficulty: 'medium',
+      answer_type_code: 'MCQ',
+      points_possible: 1,
+      points_earned: 1,
+      is_correct: true,
+      status: 'correct',
+      is_answered: true,
+      time_spent_seconds: 70,
+      student_answer: { choice_id: 'A' },
+      category_name: 'Algebra & Functions',
+      lesson_name: 'Linear Systems of Two Variables',
+      skill_name: 'Elimination Method',
+      choices: [
+        { id: 'A', content_blocks: [{ type: 'text', content: '3' }], is_correct: true },
+        { id: 'B', content_blocks: [{ type: 'text', content: '1' }], is_correct: false },
+        { id: 'C', content_blocks: [{ type: 'text', content: '4' }], is_correct: false },
+        { id: 'D', content_blocks: [{ type: 'text', content: '5' }], is_correct: false },
+      ],
+    },
+    {
+      question_id: 'sample-q3',
+      content_blocks: [{ type: 'text', content: 'Find the vertex $(h, k)$ of the quadratic function $f(x) = x^2 - 6x + 5$.' }],
+      explanation_blocks: [
+        {
+          type: 'text',
+          content: 'For a parabola in standard form $y = ax^2 + bx + c$, the x-coordinate of vertex is $h = -b/(2a) = -(-6)/(2\\cdot 1) = 3$. Evaluating $f(3) = 3^2 - 6(3) + 5 = 9 - 18 + 5 = -4$. Vertex is $(3, -4)$. The correct choice is B.',
+        },
+      ],
+      difficulty: 'medium',
+      answer_type_code: 'MCQ',
+      points_possible: 1,
+      points_earned: 0,
+      is_correct: false,
+      status: 'incorrect',
+      is_answered: true,
+      time_spent_seconds: 140,
+      student_answer: { choice_id: 'A' },
+      category_name: 'Algebra & Functions',
+      lesson_name: 'Quadratic Functions & Parabolas',
+      skill_name: 'Vertex Form Calculation',
+      choices: [
+        { id: 'A', content_blocks: [{ type: 'text', content: '(-3, -4)' }], is_correct: false },
+        { id: 'B', content_blocks: [{ type: 'text', content: '(3, -4)' }], is_correct: true },
+        { id: 'C', content_blocks: [{ type: 'text', content: '(3, 4)' }], is_correct: false },
+        { id: 'D', content_blocks: [{ type: 'text', content: '(0, 5)' }], is_correct: false },
+      ],
+    },
+    {
+      question_id: 'sample-q4',
+      content_blocks: [{ type: 'text', content: 'In a right triangle $\\triangle ABC$ with right angle at $C$, if $\\sin(A) = \\frac{3}{5}$, what is $\\cos(A)$?' }],
+      explanation_blocks: [
+        {
+          type: 'text',
+          content: 'Using the fundamental Pythagorean trigonometric identity: $\\sin^2(A) + \\cos^2(A) = 1$. Thus $\\cos^2(A) = 1 - (3/5)^2 = 1 - 9/25 = 16/25$, so $\\cos(A) = \\frac{4}{5}$. The correct choice is C.',
+        },
+      ],
+      difficulty: 'medium',
+      answer_type_code: 'MCQ',
+      points_possible: 1,
+      points_earned: 1,
+      is_correct: true,
+      status: 'correct',
+      is_answered: true,
+      time_spent_seconds: 55,
+      student_answer: { choice_id: 'C' },
+      category_name: 'Trigonometry & Advanced Topics',
+      lesson_name: 'Right Triangle Trigonometry',
+      skill_name: 'Trigonometric Identities',
+      choices: [
+        { id: 'A', content_blocks: [{ type: 'text', content: '\\frac{3}{4}' }], is_correct: false },
+        { id: 'B', content_blocks: [{ type: 'text', content: '\\frac{5}{4}' }], is_correct: false },
+        { id: 'C', content_blocks: [{ type: 'text', content: '\\frac{4}{5}' }], is_correct: true },
+        { id: 'D', content_blocks: [{ type: 'text', content: '\\frac{5}{3}' }], is_correct: false },
+      ],
+    },
+    {
+      question_id: 'sample-q5',
+      content_blocks: [{ type: 'text', content: 'What is the surface area of a cylinder with radius $r = 3$ and height $h = 7$?' }],
+      explanation_blocks: [
+        {
+          type: 'text',
+          content: 'The total surface area is given by $A = 2\\pi r h + 2\\pi r^2 = 2\\pi(3)(7) + 2\\pi(3^2) = 42\\pi + 18\\pi = 60\\pi$. The correct choice is D.',
+        },
+      ],
+      difficulty: 'hard',
+      answer_type_code: 'MCQ',
+      points_possible: 1,
+      points_earned: 1,
+      is_correct: true,
+      status: 'correct',
+      is_answered: true,
+      time_spent_seconds: 95,
+      student_answer: { choice_id: 'D' },
+      category_name: 'Geometry & Measurement',
+      lesson_name: 'Prisms, Pyramids, Cylinders & Cones',
+      skill_name: 'Surface Area Calculations',
+      choices: [
+        { id: 'A', content_blocks: [{ type: 'text', content: '42\\pi' }], is_correct: false },
+        { id: 'B', content_blocks: [{ type: 'text', content: '54\\pi' }], is_correct: false },
+        { id: 'C', content_blocks: [{ type: 'text', content: '63\\pi' }], is_correct: false },
+        { id: 'D', content_blocks: [{ type: 'text', content: '60\\pi' }], is_correct: true },
+      ],
+    },
+    {
+      question_id: 'sample-q6',
+      content_blocks: [{ type: 'text', content: 'A data set has values: $\\{4, 7, 7, 8, 9, 10, 11, 14\\}$. What is the interquartile range (IQR)?' }],
+      explanation_blocks: [
+        {
+          type: 'text',
+          content: 'First find the median of lower half: $Q_1 = (7 + 7)/2 = 7$. Median of upper half: $Q_3 = (10 + 11)/2 = 10.5$. Therefore $IQR = Q_3 - Q_1 = 10.5 - 7 = 3.5$. The correct choice is B.',
+        },
+      ],
+      difficulty: 'hard',
+      answer_type_code: 'MCQ',
+      points_possible: 1,
+      points_earned: 0,
+      is_correct: false,
+      status: 'incorrect',
+      is_answered: true,
+      time_spent_seconds: 130,
+      student_answer: { choice_id: 'C' },
+      category_name: 'Statistics & Probability',
+      lesson_name: 'Measures of Spread & Box Plots',
+      skill_name: 'Interquartile Range Calculation',
+      choices: [
+        { id: 'A', content_blocks: [{ type: 'text', content: '3' }], is_correct: false },
+        { id: 'B', content_blocks: [{ type: 'text', content: '3.5' }], is_correct: true },
+        { id: 'C', content_blocks: [{ type: 'text', content: '4' }], is_correct: false },
+        { id: 'D', content_blocks: [{ type: 'text', content: '5' }], is_correct: false },
+      ],
+    },
+  ]
+
+  const totalQuestions = sampleQuestions.length
+  const correctCount = sampleQuestions.filter((q) => q.is_correct).length
+  const pct = Math.round((correctCount / totalQuestions) * 100)
+
+  const tiers = currentTemplate.rubricTiers || []
+  const matchingTier =
+    tiers.find((t) => pct >= t.minScore && pct <= t.maxScore) ||
+    tiers[0] || {
+      id: 'proficient',
+      name: 'College Ready / Proficient Tier',
+      description: 'Solid conceptual competency with minor computational speed errors under timed sections.',
+      recommendation: 'Target timed review on multi-step rational functions and geometric coordinate proofs.',
+    }
+
+  return {
+    student_info: {
+      attempt_id: 'demo-preview',
+      assessment_name: currentTemplate.title || 'Diagnostic Assessment Demo Preview',
+      started_at: new Date(Date.now() - 1500000).toISOString(),
+      completed_at: new Date().toISOString(),
+      total_time_seconds: 1500,
+      registration_responses: {
+        full_name: 'Jordan Taylor',
+        email: 'jordan.taylor@example.edu',
+        grade: 'Grade 11 / College Prep',
+        school: 'Academy High School',
+      },
+    },
+    overall: {
+      total_questions: totalQuestions,
+      correct_count: correctCount,
+      incorrect_count: totalQuestions - correctCount,
+      unanswered_count: 0,
+      points_earned: correctCount,
+      points_possible: totalQuestions,
+      percentage: pct,
+      calculated_at: new Date().toISOString(),
+      avg_time_per_question: Math.round(1500 / totalQuestions),
+      avg_time_correct: 66,
+      avg_time_incorrect: 135,
+      rushed_mistakes_count: 0,
+      timesink_mistakes_count: 1,
+      level: {
+        id: matchingTier.id,
+        name: matchingTier.name,
+        description: matchingTier.description,
+        recommendation: matchingTier.recommendation,
+      },
+    },
+    breakdowns: [
+      {
+        type: 'category',
+        id: 'cat-alg',
+        label: 'Algebra & Functions',
+        total_questions: 3,
+        correct_count: 2,
+        points_earned: 2,
+        points_possible: 3,
+        percentage: 67,
+        classification: 'average',
+      },
+      {
+        type: 'category',
+        id: 'cat-trig',
+        label: 'Trigonometry & Advanced Topics',
+        total_questions: 1,
+        correct_count: 1,
+        points_earned: 1,
+        points_possible: 1,
+        percentage: 100,
+        classification: 'strong',
+      },
+      {
+        type: 'category',
+        id: 'cat-geo',
+        label: 'Geometry & Measurement',
+        total_questions: 1,
+        correct_count: 1,
+        points_earned: 1,
+        points_possible: 1,
+        percentage: 100,
+        classification: 'strong',
+      },
+      {
+        type: 'category',
+        id: 'cat-stat',
+        label: 'Statistics & Probability',
+        total_questions: 1,
+        correct_count: 0,
+        points_earned: 0,
+        points_possible: 1,
+        percentage: 0,
+        classification: 'weak',
+      },
+    ],
+    questions: sampleQuestions,
+    courses: [
+      {
+        id: 'crs-math-accelerator',
+        name: 'Comprehensive Pre-College Math Accelerator',
+        description: matchingTier.recommendation || 'Intensive remediation program targeting your identified focus topics.',
+        image_url: null,
+        registration_url: '#',
+        whatsapp_url: '#',
+        phone: null,
+      },
+    ],
+    org_settings: {
+      org_name: currentTemplate.title || 'Math Diagnostic Platform',
+      marketing_tagline: currentTemplate.subtitle || 'Standardized Diagnostic Assessment System',
+      contact_phone: null,
+      whatsapp_url: null,
+      website_url: null,
+    },
+    diagnostic_notes: [
+      {
+        type: 'strength',
+        title: 'Strong Geometric & Trigonometric Precision',
+        body: 'Jordan performed with 100% accuracy on right-triangle trigonometry and solid geometry measurement problems.',
+      },
+      {
+        type: 'improvement',
+        title: 'Review Measures of Spread & Box Plots',
+        body: 'Additional focus recommended on Interquartile Range calculations and multi-step quadratic vertex determination.',
+      },
+    ],
+  }
+}
+
 export default function ReportPage() {
   const { attemptId } = useParams()
   const [searchParams] = useSearchParams()
   const { session, profile, loading: authLoading } = useAuth()
   const resumeToken = searchParams.get('token')
+  const isPreview = attemptId === 'demo' || searchParams.get('preview') === '1'
   const role = profile?.role?.trim().toLowerCase()
   const isStaff = Boolean(session && (role === 'admin' || role === 'teacher'))
 
@@ -51,6 +355,7 @@ export default function ReportPage() {
   )
   const [loading, setLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [isAccessDenied, setIsAccessDenied] = useState(false)
   const [filter, setFilter] = useState<{ type: TaxonomyType; label: string } | null>(null)
 
   // PDF & Email delivery states
@@ -74,12 +379,32 @@ export default function ReportPage() {
         return
       }
 
-      // 1. Try server database via attemptService
+      // 1. Preview Mode Authorization:
+      // When previewing a report, only authorized staff (admin/teacher) can view it.
+      if (isPreview) {
+        if (!isStaff) {
+          setIsAccessDenied(true)
+          setErrorMessage("We're sorry, but you do not have access to this page. You must be signed in as an authorized teacher or administrator to view this report preview.")
+          setLoading(false)
+          return
+        }
+
+        // User is authorized staff: deliver the live preview report
+        setIsAccessDenied(false)
+        setReportAssessmentId('preview-assessment')
+        setReport(createSamplePreviewReport(persistedTemplate))
+        setLoading(false)
+        return
+      }
+
+      // 2. Standard Attempt Report Authorization:
+      // Try server database via attemptService
       try {
         const storedRec = await attemptService.loadAttemptById(attemptId)
         if (storedRec && storedRec.report_data) {
           setReportAssessmentId(storedRec.assessment_id)
           setReport(storedRec.report_data)
+          setIsAccessDenied(false)
           setLoading(false)
           return
         }
@@ -87,7 +412,7 @@ export default function ReportPage() {
         console.warn('AttemptService load failed:', err)
       }
 
-      // 2. Try direct Supabase attempts table if configured
+      // 3. Try direct Supabase attempts table if configured
       if (isSupabaseConfigured) {
         try {
           const { data: dbAtt } = await supabase
@@ -99,6 +424,7 @@ export default function ReportPage() {
           if (dbAtt?.assessment_id) setReportAssessmentId(dbAtt.assessment_id)
           if (dbAtt && dbAtt.report_data) {
             setReport(dbAtt.report_data as ReportData)
+            setIsAccessDenied(false)
             setLoading(false)
             return
           }
@@ -111,6 +437,7 @@ export default function ReportPage() {
 
             if (!error && data) {
               setReport(data as ReportData)
+              setIsAccessDenied(false)
               setLoading(false)
               return
             }
@@ -120,13 +447,19 @@ export default function ReportPage() {
         }
       }
 
-      // Not found in database
-      setErrorMessage('This assessment report was not found in the database. Please complete an assessment to generate its report.')
+      // 4. Report not found or unauthorized
+      if (!isStaff && !resumeToken) {
+        setIsAccessDenied(true)
+        setErrorMessage("We're sorry, but you do not have access to this page.")
+      } else {
+        setIsAccessDenied(false)
+        setErrorMessage('This assessment report was not found in the database. Please complete an assessment or select a valid attempt record.')
+      }
       setLoading(false)
     }
 
     load()
-  }, [attemptId, resumeToken, isStaff, authLoading])
+  }, [attemptId, resumeToken, isStaff, isPreview, authLoading, persistedTemplate])
 
   useEffect(() => {
     let active = true
@@ -380,6 +713,36 @@ export default function ReportPage() {
     )
   }
 
+  if (isAccessDenied) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-50 p-6">
+        <div className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-8 shadow-sm text-center space-y-4">
+          <div className="w-14 h-14 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mx-auto">
+            <Lock className="h-7 w-7" />
+          </div>
+          <h1 className="text-lg font-bold text-slate-900">Access Restricted</h1>
+          <p className="text-xs text-slate-600 leading-relaxed">
+            {errorMessage || "We're sorry, but you do not have access to this page."}
+          </p>
+          <div className="pt-2 flex flex-col gap-2">
+            <Link
+              to="/login"
+              className="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 transition"
+            >
+              Sign In to Your Account
+            </Link>
+            <Link
+              to="/"
+              className="text-xs font-semibold text-slate-500 hover:text-slate-700 py-1"
+            >
+              Return to Home
+            </Link>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   if (errorMessage || !report || !analytics) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50 p-6">
@@ -463,8 +826,29 @@ export default function ReportPage() {
 
   return (
     <div className="print-page min-h-screen bg-slate-50 text-slate-900">
+      {/* Top Banner when in Preview Mode */}
+      {isPreview && (
+        <div className="no-print bg-slate-900 text-white px-4 py-2.5 text-xs font-medium flex items-center justify-between shadow-xs sticky top-0 z-30">
+          <div className="flex items-center gap-2">
+            <span className="bg-blue-600 text-white px-2 py-0.5 rounded-md font-bold uppercase tracking-wider text-[10px]">
+              Preview Mode
+            </span>
+            <span className="text-slate-200">
+              Live Preview: Diagnostic Score Report Template with your active rubrics & sections
+            </span>
+          </div>
+          <Link
+            to="/admin/report-settings"
+            className="inline-flex items-center gap-1.5 bg-white text-slate-900 px-3 py-1 rounded-lg text-xs font-semibold hover:bg-slate-100 transition"
+          >
+            <ArrowLeft className="h-3.5 w-3.5 text-slate-600" />
+            <span>Return to Report Settings</span>
+          </Link>
+        </div>
+      )}
+
       {/* Sticky Header Toolbar (no-print) */}
-      <div className="no-print sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur">
+      <div className={`no-print ${isPreview ? 'relative' : 'sticky top-0'} z-20 border-b border-slate-200 bg-white/95 backdrop-blur`}>
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-3">
           <div>
             <div className="text-sm font-semibold text-slate-900">

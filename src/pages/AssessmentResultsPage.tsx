@@ -129,7 +129,7 @@ export default function AssessmentResultsPage() {
           id: rec.id,
           status: rec.status,
           started_at: rec.started_at,
-          completed_at: rec.completed_at,
+          completed_at: rec.completed_at || null,
           student_name: rec.student_name,
           student_email: rec.student_email || '',
           attempt_results: {
@@ -412,7 +412,7 @@ export default function AssessmentResultsPage() {
               </p>
             </div>
             <Link
-              to="/report/demo"
+              to="/report/demo?preview=1"
               className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-700 bg-blue-50 px-3 py-1.5 rounded-xl border border-blue-100 transition"
             >
               <span>Preview Demo Report</span>
@@ -443,7 +443,7 @@ export default function AssessmentResultsPage() {
                   Share Assessment Link
                 </button>
                 <Link
-                  to="/report/demo"
+                  to="/report/demo?preview=1"
                   className="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 text-xs font-semibold hover:bg-slate-200 transition"
                 >
                   View Sample Report

@@ -31,8 +31,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     if (!isSupabaseConfigured) {
-      setSession(null)
-      setProfile(null)
+      const explicitlySignedOut =
+        typeof window !== 'undefined' && sessionStorage.getItem('math_diag_logged_out') === 'true'
+      if (!explicitlySignedOut) {
+        const demoUser = {
+          id: 'demo-admin-id',
+          email: 'instructor@mathdiagnostic.edu',
+          user_metadata: { full_name: 'Lead Instructor' },
+        }
+        setSession({ user: demoUser })
+        setProfile({
+          id: demoUser.id,
+          email: demoUser.email,
+          full_name: 'Lead Instructor',
+          role: 'admin',
+        })
+      } else {
+        setSession(null)
+        setProfile(null)
+      }
       setLoading(false)
       return
     }
@@ -85,16 +102,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const signIn = async (email: string, password?: string): Promise<{ error: string | null }> => {
     if (!isSupabaseConfigured) {
+      if (typeof window !== 'undefined') {
+        sessionStorage.removeItem('math_diag_logged_out')
+      }
       const demoUser = {
         id: 'demo-admin-id',
-        email: email || 'admin@demo.local',
-        user_metadata: { full_name: 'Demo Admin' },
+        email: email || 'instructor@mathdiagnostic.edu',
+        user_metadata: { full_name: 'Lead Instructor' },
       }
       setSession({ user: demoUser })
       setProfile({
         id: demoUser.id,
         email: demoUser.email,
-        full_name: 'Demo Admin',
+        full_name: 'Lead Instructor',
         role: 'admin',
       })
       return { error: null }
@@ -119,7 +139,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }
 
   const signOut = async () => {
-    if (isSupabaseConfigured) await supabase.auth.signOut()
+    if (!isSupabaseConfigured) {
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('math_diag_logged_out', 'true')
+      }
+    } else {
+      await supabase.auth.signOut()
+    }
     setSession(null)
     setProfile(null)
   }

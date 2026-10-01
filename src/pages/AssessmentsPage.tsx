@@ -336,12 +336,21 @@ export const AssessmentsPage: React.FC = () => {
                   <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between gap-2 flex-wrap">
                     <div className="flex items-center gap-2">
                       <Link
+                        to={`/take/${a.id}?mode=learning`}
+                        className="inline-flex items-center gap-1 text-xs font-semibold text-indigo-700 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100/80 px-2.5 py-1.5 rounded-xl border border-indigo-200 transition"
+                        title="Launch interactive practice with instant mathematical explanations"
+                      >
+                        <Sparkles className="h-3.5 w-3.5 text-indigo-600" />
+                        <span>Practice & Learn</span>
+                      </Link>
+
+                      <Link
                         to={`/assessment/${a.id}`}
                         className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100/80 px-2.5 py-1.5 rounded-xl border border-emerald-200 transition"
                         title="Experience this diagnostic test from the student viewpoint"
                       >
                         <PlayCircle className="h-3.5 w-3.5 text-emerald-600" />
-                        <span>Student Preview</span>
+                        <span>Student Portal</span>
                       </Link>
 
                       <button

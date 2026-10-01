@@ -5,9 +5,7 @@ import {
   Sparkles,
   FileText,
   HelpCircle,
-  TrendingUp,
   ArrowRight,
-  Check,
   Sliders,
 } from 'lucide-react'
 
@@ -97,14 +95,6 @@ export default function AdminDashboardPage() {
         </svg>
       ),
     },
-    {
-      title: 'Diagnostic Reports Demo',
-      description:
-        'Review comprehensive student analytics, domain mastery, and review cards.',
-      href: '/report/demo',
-      iconBg: 'bg-rose-50 text-rose-500',
-      icon: <TrendingUp className="w-5 h-5 text-rose-500" />,
-    },
   ]
 
   return (
@@ -155,23 +145,6 @@ export default function AdminDashboardPage() {
               </div>
             </Link>
           ))}
-        </div>
-
-        {/* Bottom Status Card */}
-        <div className="mt-6 bg-[#f0f6ff] border border-blue-100 rounded-2xl p-5 flex items-start sm:items-center gap-4">
-          <div className="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-2xs">
-            <Check className="h-4 w-4 stroke-[3]" />
-          </div>
-          <div className="min-w-0">
-            <h3 className="font-bold text-slate-900 text-sm">
-              System Ready &amp; Fully Synchronized
-            </h3>
-            <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
-              Taxonomy trees, post-assessment reflection surveys, and personalized multi-week
-              action plans are actively linked. Access the new Survey &amp; Action Plan admin tab to
-              customize student diagnostic workflows.
-            </p>
-          </div>
         </div>
       </div>
     </AdminLayout>
