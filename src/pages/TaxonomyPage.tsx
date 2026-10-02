@@ -19,9 +19,13 @@ import {
   AlertCircle,
   X,
   RotateCcw,
+  Database,
+  RefreshCw,
+  Info,
 } from 'lucide-react'
 import { questionBankService, type TaxonomyRegistry, type QuestionBankItem } from '../lib/questionBankService'
 import { useUnsavedChanges } from '../contexts/UnsavedChangesContext'
+import { isSupabaseConfigured } from '../lib/supabaseClient'
 
 type ActiveTab = 'overview' | 'manage' | 'matrix'
 

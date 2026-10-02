@@ -592,8 +592,13 @@ export const INITIAL_SEED_QUESTIONS: QuestionBankItem[] = [
 let _questionsCache: QuestionBankItem[] = []
 let _hasLoadedQuestions = false
 
-let _taxonomyCache: TaxonomyRegistry = CURRICULUM_TAXONOMY
+let _taxonomyCache: TaxonomyRegistry = { ...CURRICULUM_TAXONOMY }
 let _hasLoadedTaxonomy = false
+let _isFetchingTaxonomy = false
+const _taxonomyListeners = new Set<(tax: TaxonomyRegistry) => void>()
+const _supabaseDomainIdMap = new Map<string, string>()
+const _supabaseChapterIdMap = new Map<string, string>()
+const _supabaseLessonIdMap = new Map<string, string>()
 
 let _collectionsCache: QuestionCollection[] = []
 let _hasLoadedCollections = false
@@ -641,6 +646,26 @@ async function resolveTaxonomyIds(
   const chapterTarget = (question.chapter || 'Linear Equations & Systems').trim()
   const lessonTarget = (question.lesson || 'Single-Variable Linear Equations').trim()
   const domainCode = getDomainCode(domainTarget)
+
+  // 0. Check in-memory Supabase taxonomy UUID maps first
+  const normDom = domainTarget.toLowerCase()
+  if (_supabaseDomainIdMap.has(normDom)) {
+    const matchedCatId = _supabaseDomainIdMap.get(normDom)
+    if (matchedCatId) {
+      result.category_id = matchedCatId
+      const chapKey = `${matchedCatId}::${chapterTarget.toLowerCase()}`
+      if (_supabaseChapterIdMap.has(chapKey)) {
+        const matchedChapId = _supabaseChapterIdMap.get(chapKey)
+        if (matchedChapId) {
+          result.chapter_id = matchedChapId
+          const lessKey = `${matchedChapId}::${lessonTarget.toLowerCase()}`
+          if (_supabaseLessonIdMap.has(lessKey)) {
+            result.lesson_id = _supabaseLessonIdMap.get(lessKey) || null
+          }
+        }
+      }
+    }
+  }
 
   // 1. First attempt: RPC if provided by database
   if (orgId) {
@@ -1460,24 +1485,181 @@ export const questionBankService = {
     }
   },
 
-  // Dynamic Taxonomy Management (Domain (Unit) -> Chapter -> Lesson)
+  // Dynamic Taxonomy Management (Domain (Unit) -> Chapter -> Lesson) with full Supabase and SQLite persistence
+  subscribeTaxonomy(listener: (tax: TaxonomyRegistry) => void): () => void {
+    _taxonomyListeners.add(listener)
+    return () => _taxonomyListeners.delete(listener)
+  },
+
+  _notifyTaxonomyListeners(): void {
+    _taxonomyListeners.forEach((fn) => {
+      try { fn(_taxonomyCache) } catch {}
+    })
+  },
+
   getTaxonomy(): TaxonomyRegistry {
-    if (!_hasLoadedTaxonomy && typeof window !== 'undefined') {
-      _hasLoadedTaxonomy = true
-      fetch('/api/taxonomy')
-        .then((r) => r.json())
-        .then((data) => {
-          if (data && typeof data === 'object') {
-            _taxonomyCache = data
-          }
-        })
-        .catch(() => {})
+    if (!_hasLoadedTaxonomy && !_isFetchingTaxonomy && typeof window !== 'undefined') {
+      this.fetchTaxonomy().catch(() => {})
     }
     return _taxonomyCache
   },
 
+  async fetchTaxonomy(): Promise<TaxonomyRegistry> {
+    if (_isFetchingTaxonomy) return _taxonomyCache
+    _isFetchingTaxonomy = true
+
+    try {
+      const mergedTax: TaxonomyRegistry = { ...CURRICULUM_TAXONOMY }
+
+      // 1. First, attempt to load local server SQLite taxonomy
+      try {
+        const res = await fetch('/api/taxonomy')
+        if (res.ok) {
+          const localData = await res.json()
+          if (localData && typeof localData === 'object' && Object.keys(localData).length > 0) {
+            Object.assign(mergedTax, localData)
+          }
+        }
+      } catch (err) {
+        console.warn('[Taxonomy] Warning fetching local SQLite taxonomy:', err)
+      }
+
+      // 2. Fetch directly from Supabase database tables (categories, chapters, lessons)
+      if (isSupabaseConfigured) {
+        try {
+          const [catRes, chapRes, lessonRes] = await Promise.all([
+            supabase.from('categories').select('*').order('name'),
+            supabase.from('chapters').select('*').order('name'),
+            supabase.from('lessons').select('*').order('name'),
+          ])
+
+          const categories = catRes.data || []
+          const chapters = chapRes.data || []
+          const lessons = lessonRes.data || []
+
+          if (categories.length > 0) {
+            console.log(`[Supabase Taxonomy] Retrieved ${categories.length} categories, ${chapters.length} chapters, ${lessons.length} lessons from Supabase.`)
+
+            // Process categories from Supabase
+            categories.forEach((cat: any) => {
+              if (!cat || !cat.name) return
+              const rawName = String(cat.name).trim()
+
+              // Extract [CODE] prefix if present in name
+              let domainName = rawName
+              let extractedCode: string | undefined = undefined
+              const codePrefixMatch = rawName.match(/^\[([A-Za-z0-9_-]+)\]\s*(.*)$/)
+              if (codePrefixMatch) {
+                extractedCode = codePrefixMatch[1]
+                domainName = codePrefixMatch[2] || rawName
+              }
+
+              // Parse description (may contain JSON with unitLabel, code)
+              let unitLabel = `Unit: ${domainName}`
+              let code = extractedCode || getDomainCode(domainName)
+
+              if (cat.description) {
+                try {
+                  const parsed = JSON.parse(cat.description)
+                  if (parsed.unitLabel) unitLabel = parsed.unitLabel
+                  if (parsed.code) code = parsed.code
+                } catch {
+                  if (typeof cat.description === 'string' && cat.description.trim()) {
+                    unitLabel = cat.description.trim()
+                  }
+                }
+              }
+
+              _supabaseDomainIdMap.set(domainName.toLowerCase(), cat.id)
+              _supabaseDomainIdMap.set(rawName.toLowerCase(), cat.id)
+
+              // Find chapters for this category
+              const childChapters = chapters.filter((ch: any) => ch.category_id === cat.id)
+              const mappedChapters = childChapters.map((ch: any) => {
+                const chapName = String(ch.name || '').trim()
+                _supabaseChapterIdMap.set(`${cat.id}::${chapName.toLowerCase()}`, ch.id)
+
+                // Find lessons for this chapter
+                const childLessons = lessons.filter((ls: any) => ls.chapter_id === ch.id)
+                const mappedLessons = childLessons.map((ls: any) => {
+                  const lessonName = String(ls.name || '').trim()
+                  _supabaseLessonIdMap.set(`${ch.id}::${lessonName.toLowerCase()}`, ls.id)
+                  return lessonName
+                })
+
+                return {
+                  name: chapName,
+                  code: ch.description || `${code}.${mappedLessons.length || 1}`,
+                  lessons: mappedLessons,
+                }
+              })
+
+              // If domain already exists in mergedTax with default chapters and childChapters is empty, preserve default chapters
+              const existingDomain = mergedTax[domainName]
+              if (mappedChapters.length === 0 && existingDomain && existingDomain.chapters.length > 0) {
+                mergedTax[domainName] = {
+                  unitLabel: existingDomain.unitLabel || unitLabel,
+                  code: existingDomain.code || code,
+                  chapters: existingDomain.chapters,
+                }
+              } else {
+                mergedTax[domainName] = {
+                  unitLabel,
+                  code,
+                  chapters: mappedChapters,
+                }
+              }
+            })
+
+            // Check for orphan chapters without parent category
+            const orphanChapters = chapters.filter((ch: any) => !categories.some((cat: any) => cat.id === ch.category_id))
+            if (orphanChapters.length > 0) {
+              const orphanDomainName = 'General & Foundational Curriculum'
+              if (!mergedTax[orphanDomainName]) {
+                mergedTax[orphanDomainName] = {
+                  unitLabel: 'General Modules',
+                  code: 'GEN',
+                  chapters: [],
+                }
+              }
+              orphanChapters.forEach((ch: any) => {
+                const chapName = String(ch.name || '').trim()
+                const childLessons = lessons.filter((ls: any) => ls.chapter_id === ch.id).map((l: any) => String(l.name || '').trim())
+                mergedTax[orphanDomainName].chapters.push({
+                  name: chapName,
+                  code: ch.description || 'GEN.1',
+                  lessons: childLessons,
+                })
+              })
+            }
+          }
+        } catch (dbErr) {
+          console.warn('[Taxonomy] Warning loading Supabase taxonomy tables:', dbErr)
+        }
+      }
+
+      _taxonomyCache = mergedTax
+      _hasLoadedTaxonomy = true
+      this._notifyTaxonomyListeners()
+
+      // Keep SQLite /api/taxonomy in sync with latest merged taxonomy
+      try {
+        fetch('/api/taxonomy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(mergedTax),
+        }).catch(() => {})
+      } catch {}
+
+      return _taxonomyCache
+    } finally {
+      _isFetchingTaxonomy = false
+    }
+  },
+
   saveTaxonomy(taxonomy: TaxonomyRegistry): void {
     _taxonomyCache = taxonomy
+    this._notifyTaxonomyListeners()
     try {
       fetch('/api/taxonomy', {
         method: 'POST',
@@ -1485,6 +1667,12 @@ export const questionBankService = {
         body: JSON.stringify(taxonomy),
       }).catch(() => {})
     } catch {}
+
+    if (isSupabaseConfigured) {
+      this.syncAllTaxonomyToSupabase().catch((e) => {
+        console.warn('[Supabase] Warning syncing all taxonomy:', e)
+      })
+    }
   },
 
   restoreDefaultTaxonomy(): TaxonomyRegistry {
@@ -1496,92 +1684,286 @@ export const questionBankService = {
     this.saveTaxonomy({})
   },
 
-  addDomain(domainName: string, unitLabel?: string, code?: string): void {
+  async addDomain(domainName: string, unitLabel?: string, code?: string): Promise<void> {
+    const trimmed = domainName.trim()
+    if (!trimmed) return
     const tax = this.getTaxonomy()
-    if (tax[domainName]) return
-    tax[domainName] = {
-      unitLabel: unitLabel || `Unit: ${domainName}`,
-      code: code || domainName.slice(0, 4).toUpperCase(),
+    if (tax[trimmed]) return
+
+    const finalUnit = unitLabel || `Unit: ${trimmed}`
+    const finalCode = code || trimmed.slice(0, 4).toUpperCase()
+
+    tax[trimmed] = {
+      unitLabel: finalUnit,
+      code: finalCode,
       chapters: [],
     }
-    this.saveTaxonomy(tax)
+    _taxonomyCache = { ...tax }
+    this._notifyTaxonomyListeners()
+
+    // 1. Save to local Express SQLite
+    try {
+      await fetch('/api/taxonomy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(_taxonomyCache),
+      })
+    } catch {}
+
+    // 2. Persist directly to Supabase database categories table
+    if (isSupabaseConfigured) {
+      try {
+        // Resolve subject_id if available
+        let subjectId: string | null = null
+        const { data: sub } = await supabase.from('subjects').select('id').limit(1).maybeSingle()
+        if (sub?.id) {
+          subjectId = sub.id
+        }
+
+        // Insert into categories table
+        const payload: any = {
+          name: trimmed,
+          description: JSON.stringify({ unitLabel: finalUnit, code: finalCode }),
+          is_active: true,
+        }
+        if (subjectId) payload.subject_id = subjectId
+
+        const { data: insCat, error: insErr } = await supabase
+          .from('categories')
+          .insert(payload)
+          .select('id')
+          .maybeSingle()
+
+        if (insCat?.id) {
+          _supabaseDomainIdMap.set(trimmed.toLowerCase(), insCat.id)
+          console.log(`[Supabase Taxonomy] Successfully inserted category "${trimmed}" with ID:`, insCat.id)
+        } else if (insErr) {
+          console.warn('[Supabase Taxonomy] Warning inserting category:', insErr.message)
+        }
+      } catch (err) {
+        console.warn('[Supabase Taxonomy] Exception adding domain to Supabase:', err)
+      }
+    }
   },
 
-  updateDomain(oldDomainName: string, newDomainName: string, unitLabel?: string, code?: string): void {
+  async updateDomain(oldDomainName: string, newDomainName: string, unitLabel?: string, code?: string): Promise<void> {
+    const oldTrim = oldDomainName.trim()
+    const newTrim = newDomainName.trim()
     const tax = this.getTaxonomy()
-    if (!tax[oldDomainName]) return
-    const existingData = tax[oldDomainName]
-    delete tax[oldDomainName]
-    tax[newDomainName] = {
-      ...existingData,
-      unitLabel: unitLabel ?? existingData.unitLabel,
-      code: code ?? existingData.code,
-    }
-    this.saveTaxonomy(tax)
+    if (!tax[oldTrim]) return
 
-    // Update questions mapped to the old domain name
-    if (oldDomainName !== newDomainName) {
+    const existingData = tax[oldTrim]
+    delete tax[oldTrim]
+    const finalUnit = unitLabel ?? existingData.unitLabel
+    const finalCode = code ?? existingData.code
+
+    tax[newTrim] = {
+      ...existingData,
+      unitLabel: finalUnit,
+      code: finalCode,
+    }
+    _taxonomyCache = { ...tax }
+    this._notifyTaxonomyListeners()
+
+    // Update questions mapped to old domain
+    if (oldTrim !== newTrim) {
       const questions = this.getStoredQuestions()
       const updated = questions.map((q) =>
-        q.domain === oldDomainName ? { ...q, domain: newDomainName } : q
+        q.domain === oldTrim ? { ...q, domain: newTrim } : q
       )
       this.saveQuestions(updated)
     }
+
+    // Save to local Express SQLite
+    try {
+      await fetch('/api/taxonomy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(_taxonomyCache),
+      })
+    } catch {}
+
+    // Persist to Supabase
+    if (isSupabaseConfigured) {
+      try {
+        const catId = _supabaseDomainIdMap.get(oldTrim.toLowerCase())
+        const updates: any = {
+          name: newTrim,
+          description: JSON.stringify({ unitLabel: finalUnit, code: finalCode }),
+        }
+
+        if (catId) {
+          await supabase.from('categories').update(updates).eq('id', catId)
+          _supabaseDomainIdMap.delete(oldTrim.toLowerCase())
+          _supabaseDomainIdMap.set(newTrim.toLowerCase(), catId)
+        } else {
+          await supabase.from('categories').update(updates).ilike('name', oldTrim)
+        }
+      } catch (err) {
+        console.warn('[Supabase Taxonomy] Exception updating domain:', err)
+      }
+    }
   },
 
-  deleteDomain(domainName: string, deleteLinkedQuestions: boolean = false): void {
+  async deleteDomain(domainName: string, deleteLinkedQuestions: boolean = false): Promise<void> {
     const tax = this.getTaxonomy()
     const trimmed = domainName.trim()
     const matchKey = Object.keys(tax).find((k) => k.trim().toLowerCase() === trimmed.toLowerCase()) || trimmed
     if (!tax[matchKey]) return
     delete tax[matchKey]
-    this.saveTaxonomy(tax)
+    _taxonomyCache = { ...tax }
+    this._notifyTaxonomyListeners()
 
     if (deleteLinkedQuestions) {
       const questions = this.getStoredQuestions()
       this.saveQuestions(questions.filter((q) => q.domain.trim().toLowerCase() !== trimmed.toLowerCase()))
     }
-  },
 
-  addChapter(domainName: string, chapterName: string, code?: string): void {
-    const tax = this.getTaxonomy()
-    if (!tax[domainName]) return
-    const exists = tax[domainName].chapters.some((c) => c.name === chapterName)
-    if (exists) return
-    tax[domainName].chapters.push({
-      name: chapterName,
-      code: code || `${tax[domainName].code || 'U'}.${tax[domainName].chapters.length + 1}`,
-      lessons: [],
-    })
-    this.saveTaxonomy(tax)
-  },
+    try {
+      await fetch('/api/taxonomy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(_taxonomyCache),
+      })
+    } catch {}
 
-  updateChapter(domainName: string, oldChapterName: string, newChapterName: string, code?: string): void {
-    const tax = this.getTaxonomy()
-    if (!tax[domainName]) return
-    const target = tax[domainName].chapters.find((c) => c.name === oldChapterName)
-    if (!target) return
-    target.name = newChapterName
-    if (code) target.code = code
-    this.saveTaxonomy(tax)
-
-    if (oldChapterName !== newChapterName) {
-      const questions = this.getStoredQuestions()
-      const updated = questions.map((q) =>
-        q.domain === domainName && q.chapter === oldChapterName ? { ...q, chapter: newChapterName } : q
-      )
-      this.saveQuestions(updated)
+    // Delete in Supabase
+    if (isSupabaseConfigured) {
+      try {
+        const catId = _supabaseDomainIdMap.get(trimmed.toLowerCase())
+        if (catId) {
+          // Find chapters to delete their lessons
+          const { data: chaps } = await supabase.from('chapters').select('id').eq('category_id', catId)
+          if (chaps && chaps.length > 0) {
+            const chapIds = chaps.map((c) => c.id)
+            await supabase.from('lessons').delete().in('chapter_id', chapIds)
+            await supabase.from('chapters').delete().eq('category_id', catId)
+          }
+          await supabase.from('categories').delete().eq('id', catId)
+          _supabaseDomainIdMap.delete(trimmed.toLowerCase())
+        } else {
+          await supabase.from('categories').delete().ilike('name', trimmed)
+        }
+      } catch (err) {
+        console.warn('[Supabase Taxonomy] Exception deleting domain in Supabase:', err)
+      }
     }
   },
 
-  deleteChapter(domainName: string, chapterName: string, deleteLinkedQuestions: boolean = false): void {
+  async addChapter(domainName: string, chapterName: string, code?: string): Promise<void> {
+    const dTrim = domainName.trim()
+    const cTrim = chapterName.trim()
+    if (!dTrim || !cTrim) return
+    const tax = this.getTaxonomy()
+    if (!tax[dTrim]) return
+    const exists = tax[dTrim].chapters.some((c) => c.name.toLowerCase() === cTrim.toLowerCase())
+    if (exists) return
+
+    const chapCode = code || `${tax[dTrim].code || 'CH'}.${tax[dTrim].chapters.length + 1}`
+    tax[dTrim].chapters.push({
+      name: cTrim,
+      code: chapCode,
+      lessons: [],
+    })
+    _taxonomyCache = { ...tax }
+    this._notifyTaxonomyListeners()
+
+    try {
+      await fetch('/api/taxonomy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(_taxonomyCache),
+      })
+    } catch {}
+
+    // Persist to Supabase
+    if (isSupabaseConfigured) {
+      try {
+        let catId = _supabaseDomainIdMap.get(dTrim.toLowerCase())
+        if (!catId) {
+          const { data: cData } = await supabase.from('categories').select('id').ilike('name', `%${dTrim}%`).limit(1).maybeSingle()
+          if (cData?.id) catId = cData.id
+        }
+
+        if (catId) {
+          const { data: insChap, error: chErr } = await supabase
+            .from('chapters')
+            .insert({
+              name: cTrim,
+              category_id: catId,
+              description: chapCode,
+              is_active: true,
+            })
+            .select('id')
+            .maybeSingle()
+
+          if (insChap?.id) {
+            _supabaseChapterIdMap.set(`${catId}::${cTrim.toLowerCase()}`, insChap.id)
+            console.log(`[Supabase Taxonomy] Successfully inserted chapter "${cTrim}" with ID:`, insChap.id)
+          } else if (chErr) {
+            console.warn('[Supabase Taxonomy] Warning inserting chapter:', chErr.message)
+          }
+        }
+      } catch (err) {
+        console.warn('[Supabase Taxonomy] Exception adding chapter:', err)
+      }
+    }
+  },
+
+  async updateChapter(domainName: string, oldChapterName: string, newChapterName: string, code?: string): Promise<void> {
+    const dTrim = domainName.trim()
+    const oldTrim = oldChapterName.trim()
+    const newTrim = newChapterName.trim()
+    const tax = this.getTaxonomy()
+    if (!tax[dTrim]) return
+    const target = tax[dTrim].chapters.find((c) => c.name === oldTrim)
+    if (!target) return
+    target.name = newTrim
+    if (code) target.code = code
+    _taxonomyCache = { ...tax }
+    this._notifyTaxonomyListeners()
+
+    if (oldTrim !== newTrim) {
+      const questions = this.getStoredQuestions()
+      const updated = questions.map((q) =>
+        q.domain === dTrim && q.chapter === oldTrim ? { ...q, chapter: newTrim } : q
+      )
+      this.saveQuestions(updated)
+    }
+
+    try {
+      await fetch('/api/taxonomy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(_taxonomyCache),
+      })
+    } catch {}
+
+    if (isSupabaseConfigured) {
+      try {
+        const catId = _supabaseDomainIdMap.get(dTrim.toLowerCase())
+        if (catId) {
+          await supabase
+            .from('chapters')
+            .update({ name: newTrim, description: code || target.code || null })
+            .eq('category_id', catId)
+            .ilike('name', oldTrim)
+        }
+      } catch (err) {
+        console.warn('[Supabase Taxonomy] Exception updating chapter:', err)
+      }
+    }
+  },
+
+  async deleteChapter(domainName: string, chapterName: string, deleteLinkedQuestions: boolean = false): Promise<void> {
     const tax = this.getTaxonomy()
     const dTrim = domainName.trim().toLowerCase()
     const cTrim = chapterName.trim().toLowerCase()
     const dKey = Object.keys(tax).find((k) => k.trim().toLowerCase() === dTrim) || domainName
     if (!tax[dKey]) return
     tax[dKey].chapters = tax[dKey].chapters.filter((c) => c.name.trim().toLowerCase() !== cTrim)
-    this.saveTaxonomy(tax)
+    _taxonomyCache = { ...tax }
+    this._notifyTaxonomyListeners()
 
     if (deleteLinkedQuestions) {
       const questions = this.getStoredQuestions()
@@ -1591,19 +1973,91 @@ export const questionBankService = {
         )
       )
     }
+
+    try {
+      await fetch('/api/taxonomy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(_taxonomyCache),
+      })
+    } catch {}
+
+    if (isSupabaseConfigured) {
+      try {
+        const catId = _supabaseDomainIdMap.get(dTrim)
+        if (catId) {
+          const { data: chData } = await supabase.from('chapters').select('id').eq('category_id', catId).ilike('name', cTrim).maybeSingle()
+          if (chData?.id) {
+            await supabase.from('lessons').delete().eq('chapter_id', chData.id)
+            await supabase.from('chapters').delete().eq('id', chData.id)
+          }
+        }
+      } catch (err) {
+        console.warn('[Supabase Taxonomy] Exception deleting chapter in Supabase:', err)
+      }
+    }
   },
 
-  addLesson(domainName: string, chapterName: string, lessonName: string): void {
+  async addLesson(domainName: string, chapterName: string, lessonName: string): Promise<void> {
+    const dTrim = domainName.trim()
+    const cTrim = chapterName.trim()
+    const lTrim = lessonName.trim()
+    if (!dTrim || !cTrim || !lTrim) return
+
     const tax = this.getTaxonomy()
-    if (!tax[domainName]) return
-    const chapter = tax[domainName].chapters.find((c) => c.name === chapterName)
+    if (!tax[dTrim]) return
+    const chapter = tax[dTrim].chapters.find((c) => c.name === cTrim)
     if (!chapter) return
-    if (chapter.lessons.includes(lessonName)) return
-    chapter.lessons.push(lessonName)
-    this.saveTaxonomy(tax)
+    if (chapter.lessons.includes(lTrim)) return
+    chapter.lessons.push(lTrim)
+    _taxonomyCache = { ...tax }
+    this._notifyTaxonomyListeners()
+
+    try {
+      await fetch('/api/taxonomy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(_taxonomyCache),
+      })
+    } catch {}
+
+    if (isSupabaseConfigured) {
+      try {
+        const catId = _supabaseDomainIdMap.get(dTrim.toLowerCase())
+        let chapId: string | null = null
+        if (catId) {
+          chapId = _supabaseChapterIdMap.get(`${catId}::${cTrim.toLowerCase()}`) || null
+          if (!chapId) {
+            const { data: chData } = await supabase.from('chapters').select('id').eq('category_id', catId).ilike('name', cTrim).maybeSingle()
+            if (chData?.id) chapId = chData.id
+          }
+        }
+
+        if (chapId) {
+          const { data: insLs, error: lsErr } = await supabase
+            .from('lessons')
+            .insert({
+              name: lTrim,
+              chapter_id: chapId,
+              is_active: true,
+            })
+            .select('id')
+            .maybeSingle()
+
+          if (insLs?.id) {
+            _supabaseLessonIdMap.set(`${chapId}::${lTrim.toLowerCase()}`, insLs.id)
+            console.log(`[Supabase Taxonomy] Successfully inserted lesson "${lTrim}" with ID:`, insLs.id)
+          } else if (lsErr) {
+            console.warn('[Supabase Taxonomy] Warning inserting lesson:', lsErr.message)
+          }
+        }
+      } catch (err) {
+        console.warn('[Supabase Taxonomy] Exception adding lesson to Supabase:', err)
+      }
+    }
   },
 
-  updateLesson(domainName: string, chapterName: string, oldLessonName: string, newLessonName: string): void {
+  async updateLesson(domainName: string, chapterName: string, oldLessonName: string, newLessonName: string): Promise<void> {
     const tax = this.getTaxonomy()
     if (!tax[domainName]) return
     const chapter = tax[domainName].chapters.find((c) => c.name === chapterName)
@@ -1611,7 +2065,8 @@ export const questionBankService = {
     const idx = chapter.lessons.indexOf(oldLessonName)
     if (idx === -1) return
     chapter.lessons[idx] = newLessonName
-    this.saveTaxonomy(tax)
+    _taxonomyCache = { ...tax }
+    this._notifyTaxonomyListeners()
 
     if (oldLessonName !== newLessonName) {
       const questions = this.getStoredQuestions()
@@ -1622,9 +2077,31 @@ export const questionBankService = {
       )
       this.saveQuestions(updated)
     }
+
+    try {
+      await fetch('/api/taxonomy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(_taxonomyCache),
+      })
+    } catch {}
+
+    if (isSupabaseConfigured) {
+      try {
+        const catId = _supabaseDomainIdMap.get(domainName.toLowerCase())
+        if (catId) {
+          const chapId = _supabaseChapterIdMap.get(`${catId}::${chapterName.toLowerCase()}`)
+          if (chapId) {
+            await supabase.from('lessons').update({ name: newLessonName }).eq('chapter_id', chapId).ilike('name', oldLessonName)
+          }
+        }
+      } catch (err) {
+        console.warn('[Supabase Taxonomy] Exception updating lesson:', err)
+      }
+    }
   },
 
-  moveChapter(fromDomain: string, toDomain: string, chapterName: string, newChapterName?: string, newCode?: string): void {
+  async moveChapter(fromDomain: string, toDomain: string, chapterName: string, newChapterName?: string, newCode?: string): Promise<void> {
     const tax = this.getTaxonomy()
     if (!tax[fromDomain] || !tax[toDomain]) return
     const chapterIdx = tax[fromDomain].chapters.findIndex((c) => c.name === chapterName)
@@ -1633,7 +2110,8 @@ export const questionBankService = {
     if (newChapterName) chapterObj.name = newChapterName
     if (newCode) chapterObj.code = newCode
     tax[toDomain].chapters.push(chapterObj)
-    this.saveTaxonomy(tax)
+    _taxonomyCache = { ...tax }
+    this._notifyTaxonomyListeners()
 
     const finalName = newChapterName || chapterName
     const questions = this.getStoredQuestions()
@@ -1643,9 +2121,37 @@ export const questionBankService = {
         : q
     )
     this.saveQuestions(updated)
+
+    try {
+      await fetch('/api/taxonomy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(_taxonomyCache),
+      })
+    } catch {}
+
+    if (isSupabaseConfigured) {
+      try {
+        const fromCatId = _supabaseDomainIdMap.get(fromDomain.toLowerCase())
+        const toCatId = _supabaseDomainIdMap.get(toDomain.toLowerCase())
+        if (fromCatId && toCatId) {
+          await supabase
+            .from('chapters')
+            .update({
+              category_id: toCatId,
+              name: finalName,
+              description: newCode || chapterObj.code || null,
+            })
+            .eq('category_id', fromCatId)
+            .ilike('name', chapterName)
+        }
+      } catch (err) {
+        console.warn('[Supabase Taxonomy] Exception moving chapter:', err)
+      }
+    }
   },
 
-  moveLesson(fromDomain: string, fromChapter: string, toDomain: string, toChapter: string, oldLessonName: string, newLessonName?: string): void {
+  async moveLesson(fromDomain: string, fromChapter: string, toDomain: string, toChapter: string, oldLessonName: string, newLessonName?: string): Promise<void> {
     const tax = this.getTaxonomy()
     if (!tax[fromDomain] || !tax[toDomain]) return
     const srcChapter = tax[fromDomain].chapters.find((c) => c.name === fromChapter)
@@ -1658,7 +2164,8 @@ export const questionBankService = {
     if (!dstChapter.lessons.includes(finalLesson)) {
       dstChapter.lessons.push(finalLesson)
     }
-    this.saveTaxonomy(tax)
+    _taxonomyCache = { ...tax }
+    this._notifyTaxonomyListeners()
 
     const questions = this.getStoredQuestions()
     const updated = questions.map((q) =>
@@ -1667,9 +2174,37 @@ export const questionBankService = {
         : q
     )
     this.saveQuestions(updated)
+
+    try {
+      await fetch('/api/taxonomy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(_taxonomyCache),
+      })
+    } catch {}
+
+    if (isSupabaseConfigured) {
+      try {
+        const srcCatId = _supabaseDomainIdMap.get(fromDomain.toLowerCase())
+        const dstCatId = _supabaseDomainIdMap.get(toDomain.toLowerCase())
+        if (srcCatId && dstCatId) {
+          const srcChapId = _supabaseChapterIdMap.get(`${srcCatId}::${fromChapter.toLowerCase()}`)
+          const dstChapId = _supabaseChapterIdMap.get(`${dstCatId}::${toChapter.toLowerCase()}`)
+          if (srcChapId && dstChapId) {
+            await supabase
+              .from('lessons')
+              .update({ chapter_id: dstChapId, name: finalLesson })
+              .eq('chapter_id', srcChapId)
+              .ilike('name', oldLessonName)
+          }
+        }
+      } catch (err) {
+        console.warn('[Supabase Taxonomy] Exception moving lesson:', err)
+      }
+    }
   },
 
-  deleteLesson(domainName: string, chapterName: string, lessonName: string, deleteLinkedQuestions: boolean = false): void {
+  async deleteLesson(domainName: string, chapterName: string, lessonName: string, deleteLinkedQuestions: boolean = false): Promise<void> {
     const tax = this.getTaxonomy()
     const dTrim = domainName.trim().toLowerCase()
     const cTrim = chapterName.trim().toLowerCase()
@@ -1679,7 +2214,8 @@ export const questionBankService = {
     const chapter = tax[dKey].chapters.find((c) => c.name.trim().toLowerCase() === cTrim)
     if (!chapter) return
     chapter.lessons = chapter.lessons.filter((l) => l.trim().toLowerCase() !== lTrim)
-    this.saveTaxonomy(tax)
+    _taxonomyCache = { ...tax }
+    this._notifyTaxonomyListeners()
 
     if (deleteLinkedQuestions) {
       const questions = this.getStoredQuestions()
@@ -1694,6 +2230,132 @@ export const questionBankService = {
         )
       )
     }
+
+    try {
+      await fetch('/api/taxonomy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(_taxonomyCache),
+      })
+    } catch {}
+
+    if (isSupabaseConfigured) {
+      try {
+        const catId = _supabaseDomainIdMap.get(dTrim)
+        if (catId) {
+          const chapId = _supabaseChapterIdMap.get(`${catId}::${cTrim}`)
+          if (chapId) {
+            await supabase.from('lessons').delete().eq('chapter_id', chapId).ilike('name', lTrim)
+          }
+        }
+      } catch (err) {
+        console.warn('[Supabase Taxonomy] Exception deleting lesson:', err)
+      }
+    }
+  },
+
+  /**
+   * Bulk synchronizes all defined domains, chapters, and lessons from cache into Supabase tables
+   */
+  async syncAllTaxonomyToSupabase(): Promise<{ domainsCount: number; chaptersCount: number; lessonsCount: number }> {
+    if (!isSupabaseConfigured) {
+      return { domainsCount: 0, chaptersCount: 0, lessonsCount: 0 }
+    }
+
+    let domainsCount = 0
+    let chaptersCount = 0
+    let lessonsCount = 0
+
+    try {
+      // 1. Get or create subject
+      let subjectId: string | null = null
+      const { data: sub } = await supabase.from('subjects').select('id').limit(1).maybeSingle()
+      if (sub?.id) subjectId = sub.id
+
+      const currentTax = _taxonomyCache || CURRICULUM_TAXONOMY
+
+      for (const domainName of Object.keys(currentTax)) {
+        const dData = currentTax[domainName]
+        const normDom = domainName.trim()
+
+        // Upsert category
+        let catId = _supabaseDomainIdMap.get(normDom.toLowerCase())
+        if (!catId) {
+          const { data: existingCat } = await supabase.from('categories').select('id').ilike('name', normDom).limit(1).maybeSingle()
+          if (existingCat?.id) {
+            catId = existingCat.id
+          } else {
+            const payload: any = {
+              name: normDom,
+              description: JSON.stringify({ unitLabel: dData.unitLabel || `Unit: ${normDom}`, code: dData.code || getDomainCode(normDom) }),
+              is_active: true,
+            }
+            if (subjectId) payload.subject_id = subjectId
+            const { data: insCat } = await supabase.from('categories').insert(payload).select('id').maybeSingle()
+            if (insCat?.id) catId = insCat.id
+          }
+        }
+
+        if (catId) {
+          _supabaseDomainIdMap.set(normDom.toLowerCase(), catId)
+          domainsCount++
+
+          // Iterate chapters
+          for (const chap of dData.chapters || []) {
+            const chapName = chap.name.trim()
+            let chapId = _supabaseChapterIdMap.get(`${catId}::${chapName.toLowerCase()}`)
+            if (!chapId) {
+              const { data: exChap } = await supabase.from('chapters').select('id').eq('category_id', catId).ilike('name', chapName).limit(1).maybeSingle()
+              if (exChap?.id) {
+                chapId = exChap.id
+              } else {
+                const { data: insChap } = await supabase.from('chapters').insert({
+                  name: chapName,
+                  category_id: catId,
+                  description: chap.code || null,
+                  is_active: true,
+                }).select('id').maybeSingle()
+                if (insChap?.id) chapId = insChap.id
+              }
+            }
+
+            if (chapId) {
+              _supabaseChapterIdMap.set(`${catId}::${chapName.toLowerCase()}`, chapId)
+              chaptersCount++
+
+              // Iterate lessons
+              for (const lName of chap.lessons || []) {
+                const lessonName = typeof lName === 'string' ? lName.trim() : (lName as any).name?.trim()
+                if (!lessonName) continue
+
+                let lessonId = _supabaseLessonIdMap.get(`${chapId}::${lessonName.toLowerCase()}`)
+                if (!lessonId) {
+                  const { data: exLs } = await supabase.from('lessons').select('id').eq('chapter_id', chapId).ilike('name', lessonName).limit(1).maybeSingle()
+                  if (exLs?.id) {
+                    lessonId = exLs.id
+                  } else {
+                    const { data: insLs } = await supabase.from('lessons').insert({
+                      name: lessonName,
+                      chapter_id: chapId,
+                      is_active: true,
+                    }).select('id').maybeSingle()
+                    if (insLs?.id) lessonId = insLs.id
+                  }
+                }
+                if (lessonId) {
+                  _supabaseLessonIdMap.set(`${chapId}::${lessonName.toLowerCase()}`, lessonId)
+                  lessonsCount++
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[Supabase Taxonomy] Error in syncAllTaxonomyToSupabase:', err)
+    }
+
+    return { domainsCount, chaptersCount, lessonsCount }
   },
 
   // Returns questions filtered by domain, chapter, or lesson
