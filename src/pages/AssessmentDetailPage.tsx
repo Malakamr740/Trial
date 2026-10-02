@@ -14,6 +14,7 @@ import {
   type StudentFieldConfig,
 } from '../lib/assessmentService'
 import { questionBankService, type QuestionBankItem } from '../lib/questionBankService'
+import AssessmentSubmissionStatistics from '../components/AssessmentSubmissionStatistics'
 import {
   ArrowLeft,
   Save,
@@ -28,6 +29,7 @@ import {
   FileText,
   PlayCircle,
   Share2,
+  BarChart3,
   CheckCircle2,
   AlertCircle,
   Search,
@@ -81,7 +83,9 @@ export const AssessmentDetailPage: React.FC = () => {
     if (assessmentId) {
       loadAssessment(assessmentId)
     }
-    setBankQuestions(questionBankService.getStoredQuestions())
+    questionBankService.fetchQuestionsFromDatabase()
+      .then((qList) => setBankQuestions(qList))
+      .catch(() => setBankQuestions(questionBankService.getStoredQuestions()))
   }, [assessmentId])
 
   const loadAssessment = async (id: string) => {
@@ -428,6 +432,14 @@ export const AssessmentDetailPage: React.FC = () => {
             <Share2 className="h-3.5 w-3.5 text-slate-500" />
             <span>Share</span>
           </button>
+
+          <Link
+            to={`/admin/assessments/${assessment.id}/results`}
+            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 text-xs font-semibold transition shadow-2xs"
+          >
+            <BarChart3 className="h-3.5 w-3.5 text-blue-600" />
+            <span>All Submissions &amp; Analytics</span>
+          </Link>
         </div>
       }
     >
@@ -438,6 +450,9 @@ export const AssessmentDetailPage: React.FC = () => {
           <span>{saveSuccessMessage}</span>
         </div>
       )}
+
+      {/* Statistical Part at the Top for All Submissions */}
+      <AssessmentSubmissionStatistics assessment={assessment} className="mb-6" />
 
       {/* Overview Stats Header Banner */}
       <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-2xs space-y-4">

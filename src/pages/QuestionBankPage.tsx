@@ -112,7 +112,7 @@ export const QuestionBankPage: React.FC = () => {
 
     try {
       const dbList = await questionBankService.fetchQuestionsFromDatabase()
-      if (dbList && dbList.length > 0) {
+      if (Array.isArray(dbList)) {
         setQuestions(dbList)
       }
     } catch (e) {
@@ -422,13 +422,13 @@ export const QuestionBankPage: React.FC = () => {
     setQuestionToDelete(question)
   }
 
-  const handleConfirmDeleteQuestion = () => {
+  const handleConfirmDeleteQuestion = async () => {
     if (!questionToDelete) return
     const id = questionToDelete.id
-    questionBankService.deleteQuestion(id)
+    await questionBankService.deleteQuestion(id)
     setSelectedQuestionIds((prev) => prev.filter((item) => item !== id))
-    reloadData()
     setQuestionToDelete(null)
+    await reloadData()
     setImportStatusMessage({
       type: 'success',
       text: 'Question was permanently deleted from the bank.',
@@ -452,34 +452,34 @@ export const QuestionBankPage: React.FC = () => {
     }
   }
 
-  const handleConfirmBulkDelete = () => {
+  const handleConfirmBulkDelete = async () => {
     if (selectedQuestionIds.length === 0) return
     const count = selectedQuestionIds.length
-    questionBankService.deleteQuestions(selectedQuestionIds)
+    await questionBankService.deleteQuestions(selectedQuestionIds)
     setSelectedQuestionIds([])
     setIsBulkDeleteModalOpen(false)
-    reloadData()
+    await reloadData()
     setImportStatusMessage({
       type: 'success',
       text: `Successfully deleted ${count} question${count > 1 ? 's' : ''} permanently from the bank.`,
     })
   }
 
-  const handleConfirmClearBank = () => {
+  const handleConfirmClearBank = async () => {
     const count = questions.length
-    questionBankService.clearAllQuestions()
+    await questionBankService.clearAllQuestions()
     setSelectedQuestionIds([])
     setIsClearBankModalOpen(false)
-    reloadData()
+    await reloadData()
     setImportStatusMessage({
       type: 'success',
       text: `Permanently deleted all ${count} question${count > 1 ? 's' : ''}. The question bank is now empty.`,
     })
   }
 
-  const handleRestoreDefaultSeed = () => {
-    questionBankService.restoreDefaultSeedQuestions()
-    reloadData()
+  const handleRestoreDefaultSeed = async () => {
+    await questionBankService.restoreDefaultSeedQuestions()
+    await reloadData()
     setImportStatusMessage({
       type: 'success',
       text: 'Restored default specimen diagnostic questions successfully.',

@@ -65,6 +65,8 @@ export const CreateQuestionPage: React.FC = () => {
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
+  const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null)
 
   // Pedagogical & Exam Metadata
   const [questionType, setQuestionType] = useState<'multiple_choice' | 'multi_select' | 'grid_in'>(
@@ -76,9 +78,7 @@ export const CreateQuestionPage: React.FC = () => {
   const [targetExam, setTargetExam] = useState('EST 1 / SAT Math')
 
   // Problem Stem & Media (File upload based)
-  const [prompt, setPrompt] = useState(
-    'For the quadratic equation $2x^2 - 4x + k = 0$, what value of $k$ will yield exactly one real distinct root?'
-  )
+  const [prompt, setPrompt] = useState('')
   const [imageUrl, setImageUrl] = useState('')
   const [imageFileName, setImageFileName] = useState('')
   const [imageFileSize, setImageFileSize] = useState('')
@@ -90,41 +90,37 @@ export const CreateQuestionPage: React.FC = () => {
   const [choices, setChoices] = useState<QuestionChoice[]>([
     {
       id: 'c1',
-      text: '$k = 2$',
+      text: '',
       isCorrect: true,
-      rationale: 'Discriminant $(-4)^2 - 4(2)(k) = 16 - 8k = 0 \\implies k = 2$.',
+      rationale: '',
     },
     {
       id: 'c2',
-      text: '$k = 4$',
+      text: '',
       isCorrect: false,
-      rationale: 'If $k = 4$, $16 - 32 = -16$ (produces complex roots).',
+      rationale: '',
     },
     {
       id: 'c3',
-      text: '$k = -2$',
+      text: '',
       isCorrect: false,
-      rationale: 'Sign error when applying $-4ac$.',
+      rationale: '',
     },
     {
       id: 'c4',
-      text: '$k = 0$',
+      text: '',
       isCorrect: false,
-      rationale: 'If $k = 0$, the equation becomes $2x^2 - 4x = 0$ with two real roots: $0$ and $2$.',
+      rationale: '',
     },
   ])
 
   // Numeric Free Response / Grid-in Answer
-  const [numericAnswer, setNumericAnswer] = useState('2')
+  const [numericAnswer, setNumericAnswer] = useState('')
   const [numericTolerance, setNumericTolerance] = useState('0')
 
   // Detailed Solution & Diagnostic Feedback
-  const [explanation, setExplanation] = useState(
-    'For a quadratic equation $ax^2 + bx + c = 0$ to possess exactly one distinct real root, its discriminant must be zero:\n\n$$\\Delta = b^2 - 4ac = 0$$\n\nHere, $a = 2$, $b = -4$, and $c = k$.\n\nSubstitute these values:\n$$(-4)^2 - 4(2)(k) = 0$$\n$$16 - 8k = 0$$\n$$8k = 16 \\implies k = 2$$'
-  )
-  const [commonMisconception, setCommonMisconception] = useState(
-    'Students frequently confuse the condition for two distinct real roots ($b^2 - 4ac > 0$) with one real root ($\\Delta = 0$), or forget parentheses when squaring negative $b$: $(-4)^2 = 16$.'
-  )
+  const [explanation, setExplanation] = useState('')
+  const [commonMisconception, setCommonMisconception] = useState('')
 
   // Preview interactive state
   const [previewSelectedChoice, setPreviewSelectedChoice] = useState<string | null>(null)
@@ -493,7 +489,7 @@ export const CreateQuestionPage: React.FC = () => {
   }
 
   // Save to Question Bank Service
-  const persistQuestion = () => {
+  const persistQuestion = async (): Promise<QuestionBankItem> => {
     setFormError(null)
 
     if (!prompt.trim()) {
@@ -503,9 +499,15 @@ export const CreateQuestionPage: React.FC = () => {
     }
 
     if (questionType === 'multiple_choice' || questionType === 'multi_select') {
-      const correctCount = choices.filter((c) => c.isCorrect).length
+      const filledChoices = choices.filter((c) => c.text.trim().length > 0)
+      if (filledChoices.length < 2) {
+        const message = 'Please provide at least 2 non-empty answer choices.'
+        setFormError(message)
+        throw new Error(message)
+      }
+      const correctCount = choices.filter((c) => c.isCorrect && c.text.trim().length > 0).length
       if (correctCount === 0) {
-        const message = 'Please mark at least one correct answer key.'
+        const message = 'Please mark at least one valid choice as the correct answer key.'
         setFormError(message)
         throw new Error(message)
       }
@@ -528,44 +530,94 @@ export const CreateQuestionPage: React.FC = () => {
       calculatorAllowed,
       estimatedSeconds,
       targetExam,
-      prompt,
+      prompt: prompt.trim(),
       imageUrl,
       imageCaption,
-      choices: questionType === 'grid_in' ? [] : choices,
-      numericAnswer: questionType === 'grid_in' ? numericAnswer : undefined,
+      choices: questionType === 'grid_in' ? [] : choices.filter((c) => c.text.trim().length > 0),
+      numericAnswer: questionType === 'grid_in' ? numericAnswer.trim() : undefined,
       numericTolerance: questionType === 'grid_in' ? numericTolerance : undefined,
-      explanation,
-      commonMisconception,
+      explanation: explanation.trim(),
+      commonMisconception: commonMisconception.trim(),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     }
 
     if (isEditing && questionId) {
-      questionBankService.updateQuestion(questionId, questionItem)
+      await questionBankService.updateQuestion(questionId, questionItem)
     } else {
-      questionBankService.addQuestion(questionItem)
+      await questionBankService.addQuestion(questionItem)
     }
 
     return questionItem
   }
 
   const saveBeforeNavigation = () => {
-    persistQuestion()
-    markClean()
-    setHasUnsavedChanges(false)
+    persistQuestion().then(() => {
+      markClean()
+      setHasUnsavedChanges(false)
+    }).catch(() => {})
   }
   const markClean = useUnsavedChanges(hasUnsavedChanges, saveBeforeNavigation)
 
-  const handleSave = (e: React.FormEvent) => {
-    e.preventDefault()
+  const handleSave = async (e?: React.FormEvent, addAnother: boolean = false) => {
+    if (e) e.preventDefault()
+    if (isSaving) return
+    setIsSaving(true)
+    setFormError(null)
+
     try {
-      persistQuestion()
+      const saved = await persistQuestion()
       markClean()
       setHasUnsavedChanges(false)
-    } catch {
-      return
+      setSaveSuccessMessage(`Question "${saved.prompt.slice(0, 30)}..." successfully saved to database!`)
+
+      // Refresh database questions cache
+      await questionBankService.fetchQuestionsFromDatabase()
+
+      if (addAnother) {
+        setPrompt('')
+        setImageUrl('')
+        setImageFileName('')
+        setImageFileSize('')
+        setImageCaption('')
+        setChoices([
+          { id: `c_${Date.now()}_1`, text: '', isCorrect: true, rationale: '' },
+          { id: `c_${Date.now()}_2`, text: '', isCorrect: false, rationale: '' },
+          { id: `c_${Date.now()}_3`, text: '', isCorrect: false, rationale: '' },
+          { id: `c_${Date.now()}_4`, text: '', isCorrect: false, rationale: '' },
+        ])
+        setNumericAnswer('')
+        setExplanation('')
+        setCommonMisconception('')
+        setHasUnsavedChanges(false)
+        if (isEditing) {
+          navigate('/admin/questions/new')
+        }
+      } else {
+        setTimeout(() => {
+          navigate('/admin/questions')
+        }, 400)
+      }
+    } catch (err: any) {
+      console.error('Save question error:', err)
+      setFormError(err.message || 'Failed to save question to database. Please check your inputs and try again.')
+    } finally {
+      setIsSaving(false)
     }
-    navigate('/admin/questions')
+  }
+
+  const handleLoadSampleTemplate = () => {
+    setPrompt('For the quadratic equation $2x^2 - 4x + k = 0$, what value of $k$ will yield exactly one real distinct root?')
+    setChoices([
+      { id: 'c1', text: '$k = 2$', isCorrect: true, rationale: 'Discriminant $(-4)^2 - 4(2)(k) = 16 - 8k = 0 \\implies k = 2$.' },
+      { id: 'c2', text: '$k = 4$', isCorrect: false, rationale: 'If $k = 4$, $16 - 32 = -16$ (produces complex roots).' },
+      { id: 'c3', text: '$k = -2$', isCorrect: false, rationale: 'Sign error when applying $-4ac$.' },
+      { id: 'c4', text: '$k = 0$', isCorrect: false, rationale: 'If $k = 0$, the equation becomes $2x^2 - 4x = 0$ with two real roots: $0$ and $2$.' },
+    ])
+    setNumericAnswer('2')
+    setExplanation('For a quadratic equation $ax^2 + bx + c = 0$ to possess exactly one distinct real root, its discriminant must be zero:\n\n$$\\Delta = b^2 - 4ac = 0$$\n\nHere, $a = 2$, $b = -4$, and $c = k$.\n\nSubstitute these values:\n$$(-4)^2 - 4(2)(k) = 0$$\n$$16 - 8k = 0$$\n$$8k = 16 \\implies k = 2$$')
+    setCommonMisconception('Students frequently confuse the condition for two distinct real roots ($b^2 - 4ac > 0$) with one real root ($\\Delta = 0$), or forget parentheses when squaring negative $b$: $(-4)^2 = 16$.')
+    setHasUnsavedChanges(true)
   }
 
   // Helper to render math text or LaTeX safely (supports both $block$ and $inline$)
@@ -656,6 +708,18 @@ export const CreateQuestionPage: React.FC = () => {
             </button>
           </div>
 
+          {!isEditing && !prompt.trim() && (
+            <button
+              type="button"
+              onClick={handleLoadSampleTemplate}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-blue-200 bg-blue-50 text-blue-700 text-xs font-semibold hover:bg-blue-100 transition shadow-2xs cursor-pointer"
+              title="Pre-populate with sample quadratic question template"
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              <span>Load Sample</span>
+            </button>
+          )}
+
           <Link
             to="/admin/questions"
             className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition"
@@ -663,9 +727,38 @@ export const CreateQuestionPage: React.FC = () => {
             <ArrowLeft className="h-3.5 w-3.5" />
             <span>Back to Bank</span>
           </Link>
+
+          {!isEditing && (
+            <button
+              type="button"
+              disabled={isSaving}
+              onClick={() => handleSave(undefined, true)}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border border-slate-300 bg-white text-slate-700 text-xs font-semibold hover:bg-slate-50 disabled:opacity-50 transition shadow-2xs cursor-pointer"
+            >
+              <span>Save & Add Another</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            disabled={isSaving}
+            onClick={() => handleSave()}
+            style={{ backgroundColor: '#2563eb', color: '#ffffff' }}
+            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 disabled:opacity-50 transition shadow-2xs cursor-pointer"
+          >
+            <Save className="h-3.5 w-3.5" />
+            <span>{isSaving ? 'Saving...' : isEditing ? 'Update Question' : 'Save to Database'}</span>
+          </button>
         </div>
       }
     >
+      {/* Toast Notification */}
+      {saveSuccessMessage && (
+        <div className="fixed bottom-6 right-6 z-50 bg-slate-900 text-white px-4 py-2.5 rounded-2xl shadow-xl border border-slate-700 flex items-center gap-2 text-xs font-medium animate-in fade-in duration-200">
+          <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+          <span>{saveSuccessMessage}</span>
+        </div>
+      )}
       <div
         className={`grid gap-6 ${
           previewMode === 'split'

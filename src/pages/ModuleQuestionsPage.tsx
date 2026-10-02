@@ -37,7 +37,9 @@ export const ModuleQuestionsPage: React.FC = () => {
         setSection(sec)
       }
     }
-    setBankQuestions(questionBankService.getStoredQuestions())
+    questionBankService.fetchQuestionsFromDatabase()
+      .then((qList) => setBankQuestions(qList))
+      .catch(() => setBankQuestions(questionBankService.getStoredQuestions()))
   }, [assessmentId, moduleId])
 
   if (!assessment || !section) {

@@ -6,6 +6,7 @@ import {
   assessmentService,
   type Assessment,
 } from '../lib/assessmentService'
+import { computeAssessmentStatistics } from '../lib/assessmentStatistics'
 import {
   Plus,
   FileText,
@@ -52,7 +53,7 @@ export const AssessmentsPage: React.FC = () => {
     // 2. Fetch and merge latest records from database
     try {
       const dbList = await assessmentService.fetchAssessmentsFromDatabase()
-      if (dbList && dbList.length > 0) {
+      if (Array.isArray(dbList)) {
         setAssessments(dbList)
       }
     } catch (e) {
@@ -331,6 +332,49 @@ export const AssessmentsPage: React.FC = () => {
                         </span>
                       )}
                     </div>
+
+                    {/* Submission Statistics Snapshot */}
+                    {(() => {
+                      const cardStats = computeAssessmentStatistics(a)
+                      const weak = cardStats.topWeakDomains[0]
+                      const strong = cardStats.topStrongDomains[0]
+                      return (
+                        <div className="mt-3.5 p-2.5 rounded-xl bg-slate-50/80 border border-slate-200/80 space-y-1.5">
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="font-bold text-slate-700 flex items-center gap-1">
+                              <BarChart3 className="h-3 w-3 text-blue-600" />
+                              <span>Submission Statistics:</span>
+                            </span>
+                            <Link
+                              to={`/admin/assessments/${a.id}/results`}
+                              className="text-[10px] font-semibold text-blue-600 hover:text-blue-700 hover:underline"
+                            >
+                              Detailed Analytics →
+                            </Link>
+                          </div>
+                          <div className="grid grid-cols-3 gap-1.5 text-[10px]">
+                            <div className="bg-white p-2 rounded-lg border border-slate-200/60 shadow-2xs">
+                              <div className="text-slate-400 font-medium">Avg Score</div>
+                              <div className="font-bold text-slate-900 text-xs mt-0.5">
+                                {cardStats.averageScore}%
+                              </div>
+                            </div>
+                            <div className="bg-white p-2 rounded-lg border border-rose-100 shadow-2xs">
+                              <div className="text-rose-600 font-medium truncate">Top Weak Area</div>
+                              <div className="font-bold text-rose-700 truncate mt-0.5">
+                                {weak ? `${weak.name.slice(0, 14)} (${weak.accuracy}%)` : 'None'}
+                              </div>
+                            </div>
+                            <div className="bg-white p-2 rounded-lg border border-emerald-100 shadow-2xs">
+                              <div className="text-emerald-600 font-medium truncate">Top Strong Area</div>
+                              <div className="font-bold text-emerald-700 truncate mt-0.5">
+                                {strong ? `${strong.name.slice(0, 14)} (${strong.accuracy}%)` : 'Evaluating'}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })()}
                   </div>
 
                   <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between gap-2 flex-wrap">

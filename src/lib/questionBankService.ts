@@ -613,32 +613,46 @@ export const questionBankService = {
     return _questionsCache
   },
 
-  saveQuestions(questions: QuestionBankItem[]): void {
+  async saveQuestions(questions: QuestionBankItem[]): Promise<boolean> {
     _questionsCache = questions
     try {
-      fetch('/api/questions', {
+      const res = await fetch('/api/questions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(questions),
-      }).catch((err) => console.warn('Failed to save questions to database API:', err))
-    } catch {}
+      })
+      if (!res.ok) {
+        console.error('Failed to save questions to database API:', res.status, await res.text())
+        return false
+      }
+      return true
+    } catch (err) {
+      console.warn('Failed to save questions to database API:', err)
+      return false
+    }
   },
 
   /**
-   * Sync a question bank item to Supabase database if configured
+   * Sync a question bank item to server SQLite database (and Supabase if configured)
    */
-  async syncQuestionToDatabase(question: QuestionBankItem): Promise<void> {
+  async syncQuestionToDatabase(question: QuestionBankItem): Promise<boolean> {
     try {
-      await fetch('/api/questions', {
+      const res = await fetch('/api/questions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify([question]),
       })
-    } catch (err) {
-      console.warn('Notice saving question to database API:', err)
+      if (!res.ok) {
+        const errorText = await res.text()
+        console.error('Database error saving question:', res.status, errorText)
+        throw new Error(`Failed to save question to database (HTTP ${res.status}): ${errorText}`)
+      }
+    } catch (err: any) {
+      console.error('Notice saving question to database API:', err)
+      throw err
     }
 
-    if (!isSupabaseConfigured) return
+    if (!isSupabaseConfigured) return true
     try {
       // Build content blocks structure
       const contentBlocks: any[] = []
@@ -692,27 +706,36 @@ export const questionBankService = {
     } catch (err) {
       console.warn('Notice syncing question to Supabase:', err)
     }
+
+    return true
   },
 
-  async deleteQuestionFromDatabase(id: string): Promise<void> {
+  async deleteQuestionFromDatabase(id: string): Promise<boolean> {
     try {
-      await fetch(`/api/questions/${id}`, { method: 'DELETE' })
+      const res = await fetch(`/api/questions/${id}`, { method: 'DELETE' })
+      if (!res.ok) {
+        console.warn('Failed to delete question from server database:', res.status)
+        return false
+      }
     } catch (err) {
       console.warn('Notice deleting question from database API:', err)
+      return false
     }
 
-    if (!isSupabaseConfigured) return
+    if (!isSupabaseConfigured) return true
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
-    if (!isUuid) return
+    if (!isUuid) return true
     try {
       await supabase.from('questions').delete().eq('id', id)
     } catch (err) {
       console.warn('Notice deleting question from Supabase:', err)
     }
+
+    return true
   },
 
   /**
-   * Fetch questions from Supabase database and merge with local question bank
+   * Fetch questions from SQLite database and merge with local question bank
    */
   async fetchQuestionsFromDatabase(): Promise<QuestionBankItem[]> {
     _hasLoadedQuestions = true
@@ -830,17 +853,28 @@ export const questionBankService = {
     return list.find((q) => String(q.id).trim() === targetId)
   },
 
-  addQuestion(question: QuestionBankItem): void {
+  async addQuestion(question: QuestionBankItem): Promise<QuestionBankItem> {
+    if (!_hasLoadedQuestions && typeof window !== 'undefined') {
+      try {
+        await this.fetchQuestionsFromDatabase()
+      } catch {}
+    }
     const list = this.getStoredQuestions()
     const targetId = String(question.id).trim()
     const updated = [question, ...list.filter((q) => String(q.id).trim() !== targetId)]
-    this.saveQuestions(updated)
+    _questionsCache = updated
 
-    // Sync to database
-    this.syncQuestionToDatabase(question)
+    // Await persisting to server SQLite database
+    await this.syncQuestionToDatabase(question)
+    return question
   },
 
-  updateQuestion(id: string, updates: Partial<QuestionBankItem>): void {
+  async updateQuestion(id: string, updates: Partial<QuestionBankItem>): Promise<QuestionBankItem | null> {
+    if (!_hasLoadedQuestions && typeof window !== 'undefined') {
+      try {
+        await this.fetchQuestionsFromDatabase()
+      } catch {}
+    }
     const list = this.getStoredQuestions()
     const targetId = String(id).trim()
     let updatedItem: QuestionBankItem | null = null
@@ -851,37 +885,66 @@ export const questionBankService = {
       }
       return q
     })
-    this.saveQuestions(updated)
+    _questionsCache = updated
 
     if (updatedItem) {
-      this.syncQuestionToDatabase(updatedItem)
+      await this.syncQuestionToDatabase(updatedItem)
     }
+    return updatedItem
   },
 
-  deleteQuestion(id: string): void {
+  async deleteQuestion(id: string): Promise<void> {
+    if (!_hasLoadedQuestions && typeof window !== 'undefined') {
+      try {
+        await this.fetchQuestionsFromDatabase()
+      } catch {}
+    }
     const list = this.getStoredQuestions()
     const targetId = String(id).trim()
     const updated = list.filter((q) => String(q.id).trim() !== targetId)
-    this.saveQuestions(updated)
+    _questionsCache = updated
 
-    this.deleteQuestionFromDatabase(targetId)
+    await this.deleteQuestionFromDatabase(targetId)
   },
 
-  deleteQuestions(ids: string[]): void {
+  async deleteQuestions(ids: string[]): Promise<void> {
+    if (!_hasLoadedQuestions && typeof window !== 'undefined') {
+      try {
+        await this.fetchQuestionsFromDatabase()
+      } catch {}
+    }
     const list = this.getStoredQuestions()
     const idSet = new Set(ids.map((id) => String(id).trim()))
     const updated = list.filter((q) => !idSet.has(String(q.id).trim()))
-    this.saveQuestions(updated)
+    _questionsCache = updated
 
-    ids.forEach((id) => this.deleteQuestionFromDatabase(id))
+    try {
+      await fetch('/api/questions/batch-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      })
+    } catch (err) {
+      console.warn('Batch delete error:', err)
+    }
+
+    for (const id of ids) {
+      await this.deleteQuestionFromDatabase(id)
+    }
   },
 
-  clearAllQuestions(): void {
-    this.saveQuestions([])
+  async clearAllQuestions(): Promise<void> {
+    _questionsCache = []
+    try {
+      await fetch('/api/questions', { method: 'DELETE' })
+    } catch (err) {
+      console.warn('Failed to clear questions from database API:', err)
+    }
   },
 
-  restoreDefaultSeedQuestions(): QuestionBankItem[] {
-    this.saveQuestions(INITIAL_SEED_QUESTIONS)
+  async restoreDefaultSeedQuestions(): Promise<QuestionBankItem[]> {
+    _questionsCache = INITIAL_SEED_QUESTIONS
+    await this.saveQuestions(INITIAL_SEED_QUESTIONS)
     return INITIAL_SEED_QUESTIONS
   },
 

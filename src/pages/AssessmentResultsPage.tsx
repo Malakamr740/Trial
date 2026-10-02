@@ -4,6 +4,7 @@ import AdminLayout from '../components/AdminLayout'
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient'
 import { assessmentService, type Assessment } from '../lib/assessmentService'
 import { attemptService } from '../lib/attemptService'
+import AssessmentSubmissionStatistics from '../components/AssessmentSubmissionStatistics'
 import {
   BarChart3,
   Users,
@@ -351,56 +352,13 @@ export default function AssessmentResultsPage() {
       }
     >
       <div className="space-y-6">
-        {/* Metric Summary Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                Total Submissions
-              </span>
-              <Users className="h-4 w-4 text-blue-500" />
-            </div>
-            <p className="text-3xl font-extrabold text-slate-900 mt-2">{stats.total}</p>
-            <p className="text-xs text-slate-500 mt-1">Recorded student attempts</p>
-          </div>
-
-          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                Average Score
-              </span>
-              <TrendingUp className="h-4 w-4 text-emerald-500" />
-            </div>
-            <p className="text-3xl font-extrabold text-slate-900 mt-2">
-              {stats.avgScore ? `${stats.avgScore}%` : '—'}
-            </p>
-            <p className="text-xs text-slate-500 mt-1">Mean percentage score</p>
-          </div>
-
-          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                Passing Rate
-              </span>
-              <Award className="h-4 w-4 text-purple-500" />
-            </div>
-            <p className="text-3xl font-extrabold text-slate-900 mt-2">
-              {stats.passRate ? `${stats.passRate}%` : '—'}
-            </p>
-            <p className="text-xs text-slate-500 mt-1">Threshold: ≥ {assessment?.settings.passingPercentage || 65}%</p>
-          </div>
-
-          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                Completed Tests
-              </span>
-              <CheckCircle2 className="h-4 w-4 text-indigo-500" />
-            </div>
-            <p className="text-3xl font-extrabold text-slate-900 mt-2">{stats.completed}</p>
-            <p className="text-xs text-slate-500 mt-1">Full diagnostics completed</p>
-          </div>
-        </div>
+        {/* Statistical Part at the Top for All Submissions */}
+        {assessment && (
+          <AssessmentSubmissionStatistics
+            assessment={assessment}
+            attempts={attempts as any}
+          />
+        )}
 
         {/* Attempts Table */}
         <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">

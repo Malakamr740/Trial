@@ -222,22 +222,33 @@ app.post('/api/questions', (req: Request, res: Response) => {
         updated_at = excluded.updated_at
     `);
 
-    for (const q of items) {
-      if (!q || !q.id) continue;
-      stmt.run(
-        q.id,
-        q.subject || '',
-        q.domain || '',
-        q.topic || '',
-        q.difficulty || '',
-        JSON.stringify(q),
-        q.createdAt || now,
-        now
-      );
+    db.exec('BEGIN TRANSACTION');
+    try {
+      for (const q of items) {
+        if (!q) continue;
+        const qId = q.id || `qb-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+        q.id = qId;
+        stmt.run(
+          qId,
+          q.subject || '',
+          q.domain || '',
+          q.topic || q.chapter || '',
+          q.difficulty || '',
+          JSON.stringify(q),
+          q.createdAt || now,
+          now
+        );
+      }
+      db.exec('COMMIT');
+    } catch (txErr) {
+      db.exec('ROLLBACK');
+      throw txErr;
     }
 
+    console.log(`[Database] Successfully saved ${items.length} question(s) to SQLite database`);
     res.json({ success: true, count: items.length });
   } catch (err: any) {
+    console.error('[Database] Error saving questions to SQLite:', err);
     res.status(500).json({ error: err.message });
   }
 });
