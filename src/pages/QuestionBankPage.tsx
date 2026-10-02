@@ -115,6 +115,8 @@ export const QuestionBankPage: React.FC = () => {
       if (Array.isArray(dbList)) {
         setQuestions(dbList)
       }
+      // Also ensure any unlinked Supabase questions are backfilled with taxonomy IDs
+      questionBankService.backfillSupabaseQuestionsTaxonomy().catch(() => {})
     } catch (e) {
       console.warn('Notice loading questions from database:', e)
     }

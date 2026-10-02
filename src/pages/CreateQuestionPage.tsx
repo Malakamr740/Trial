@@ -493,7 +493,44 @@ export const CreateQuestionPage: React.FC = () => {
     setFormError(null)
 
     if (!prompt.trim()) {
-      const message = 'Please enter a question prompt stem.'
+      const message = 'Question Prompt / Stem is mandatory.'
+      setFormError(message)
+      throw new Error(message)
+    }
+
+    if (!domain.trim()) {
+      const message = 'Domain / Category is mandatory. Please select or enter a valid domain.'
+      setFormError(message)
+      throw new Error(message)
+    }
+
+    if (!chapter.trim()) {
+      const message = 'Chapter is mandatory. Please select or enter a chapter.'
+      setFormError(message)
+      throw new Error(message)
+    }
+
+    if (!lesson.trim()) {
+      const message = 'Lesson is mandatory. Please select or enter a lesson.'
+      setFormError(message)
+      throw new Error(message)
+    }
+
+    if (!targetExam.trim()) {
+      const message = 'Target Exam is mandatory.'
+      setFormError(message)
+      throw new Error(message)
+    }
+
+    if (!collection.trim()) {
+      const message = 'Collection is mandatory.'
+      setFormError(message)
+      throw new Error(message)
+    }
+
+    const estSec = Number(estimatedSeconds)
+    if (!estimatedSeconds || isNaN(estSec) || estSec < 10) {
+      const message = 'Time Estimate is mandatory and must be at least 10 seconds.'
       setFormError(message)
       throw new Error(message)
     }
@@ -519,17 +556,28 @@ export const CreateQuestionPage: React.FC = () => {
       }
     }
 
+    const generateUUID = () => {
+      if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return crypto.randomUUID()
+      }
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+        const r = (Math.random() * 16) | 0
+        const v = c === 'x' ? r : (r & 0x3) | 0x8
+        return v.toString(16)
+      })
+    }
+
     const questionItem: QuestionBankItem = {
-      id: questionId || `qb-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      id: questionId || generateUUID(),
       collection: collection.trim() || 'General Question Bank',
-      domain,
-      chapter,
-      lesson,
+      domain: domain.trim(),
+      chapter: chapter.trim(),
+      lesson: lesson.trim(),
       difficulty,
       questionType,
       calculatorAllowed,
-      estimatedSeconds,
-      targetExam,
+      estimatedSeconds: Math.max(10, estSec),
+      targetExam: targetExam.trim(),
       prompt: prompt.trim(),
       imageUrl,
       imageCaption,
@@ -559,7 +607,7 @@ export const CreateQuestionPage: React.FC = () => {
   }
   const markClean = useUnsavedChanges(hasUnsavedChanges, saveBeforeNavigation)
 
-  const handleSave = async (e?: React.FormEvent, addAnother: boolean = false) => {
+  const handleSave = async (e?: React.FormEvent) => {
     if (e) e.preventDefault()
     if (isSaving) return
     setIsSaving(true)
@@ -574,50 +622,15 @@ export const CreateQuestionPage: React.FC = () => {
       // Refresh database questions cache
       await questionBankService.fetchQuestionsFromDatabase()
 
-      if (addAnother) {
-        setPrompt('')
-        setImageUrl('')
-        setImageFileName('')
-        setImageFileSize('')
-        setImageCaption('')
-        setChoices([
-          { id: `c_${Date.now()}_1`, text: '', isCorrect: true, rationale: '' },
-          { id: `c_${Date.now()}_2`, text: '', isCorrect: false, rationale: '' },
-          { id: `c_${Date.now()}_3`, text: '', isCorrect: false, rationale: '' },
-          { id: `c_${Date.now()}_4`, text: '', isCorrect: false, rationale: '' },
-        ])
-        setNumericAnswer('')
-        setExplanation('')
-        setCommonMisconception('')
-        setHasUnsavedChanges(false)
-        if (isEditing) {
-          navigate('/admin/questions/new')
-        }
-      } else {
-        setTimeout(() => {
-          navigate('/admin/questions')
-        }, 400)
-      }
+      setTimeout(() => {
+        navigate('/admin/questions')
+      }, 350)
     } catch (err: any) {
       console.error('Save question error:', err)
       setFormError(err.message || 'Failed to save question to database. Please check your inputs and try again.')
     } finally {
       setIsSaving(false)
     }
-  }
-
-  const handleLoadSampleTemplate = () => {
-    setPrompt('For the quadratic equation $2x^2 - 4x + k = 0$, what value of $k$ will yield exactly one real distinct root?')
-    setChoices([
-      { id: 'c1', text: '$k = 2$', isCorrect: true, rationale: 'Discriminant $(-4)^2 - 4(2)(k) = 16 - 8k = 0 \\implies k = 2$.' },
-      { id: 'c2', text: '$k = 4$', isCorrect: false, rationale: 'If $k = 4$, $16 - 32 = -16$ (produces complex roots).' },
-      { id: 'c3', text: '$k = -2$', isCorrect: false, rationale: 'Sign error when applying $-4ac$.' },
-      { id: 'c4', text: '$k = 0$', isCorrect: false, rationale: 'If $k = 0$, the equation becomes $2x^2 - 4x = 0$ with two real roots: $0$ and $2$.' },
-    ])
-    setNumericAnswer('2')
-    setExplanation('For a quadratic equation $ax^2 + bx + c = 0$ to possess exactly one distinct real root, its discriminant must be zero:\n\n$$\\Delta = b^2 - 4ac = 0$$\n\nHere, $a = 2$, $b = -4$, and $c = k$.\n\nSubstitute these values:\n$$(-4)^2 - 4(2)(k) = 0$$\n$$16 - 8k = 0$$\n$$8k = 16 \\implies k = 2$$')
-    setCommonMisconception('Students frequently confuse the condition for two distinct real roots ($b^2 - 4ac > 0$) with one real root ($\\Delta = 0$), or forget parentheses when squaring negative $b$: $(-4)^2 = 16$.')
-    setHasUnsavedChanges(true)
   }
 
   // Helper to render math text or LaTeX safely (supports both $block$ and $inline$)
@@ -708,18 +721,6 @@ export const CreateQuestionPage: React.FC = () => {
             </button>
           </div>
 
-          {!isEditing && !prompt.trim() && (
-            <button
-              type="button"
-              onClick={handleLoadSampleTemplate}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-blue-200 bg-blue-50 text-blue-700 text-xs font-semibold hover:bg-blue-100 transition shadow-2xs cursor-pointer"
-              title="Pre-populate with sample quadratic question template"
-            >
-              <Sparkles className="h-3.5 w-3.5" />
-              <span>Load Sample</span>
-            </button>
-          )}
-
           <Link
             to="/admin/questions"
             className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition"
@@ -728,26 +729,15 @@ export const CreateQuestionPage: React.FC = () => {
             <span>Back to Bank</span>
           </Link>
 
-          {!isEditing && (
-            <button
-              type="button"
-              disabled={isSaving}
-              onClick={() => handleSave(undefined, true)}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border border-slate-300 bg-white text-slate-700 text-xs font-semibold hover:bg-slate-50 disabled:opacity-50 transition shadow-2xs cursor-pointer"
-            >
-              <span>Save & Add Another</span>
-            </button>
-          )}
-
           <button
             type="button"
             disabled={isSaving}
             onClick={() => handleSave()}
             style={{ backgroundColor: '#2563eb', color: '#ffffff' }}
-            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 disabled:opacity-50 transition shadow-2xs cursor-pointer"
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 disabled:opacity-50 transition shadow-2xs cursor-pointer"
           >
             <Save className="h-3.5 w-3.5" />
-            <span>{isSaving ? 'Saving...' : isEditing ? 'Update Question' : 'Save to Database'}</span>
+            <span>{isSaving ? 'Saving...' : isEditing ? 'Update Question' : 'Save Question to Bank'}</span>
           </button>
         </div>
       }
@@ -835,13 +825,25 @@ export const CreateQuestionPage: React.FC = () => {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {/* Domain Selector */}
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700">Domain (Unit)</label>
+                  <label className="block text-xs font-semibold text-slate-700">
+                    Domain (Unit) <span className="text-rose-500 font-bold ml-0.5">* Required</span>
+                  </label>
                   <select
                     value={domain}
+                    required
                     onChange={(e) => {
-                      setDomain(e.target.value)
+                      const newDomain = e.target.value
+                      setDomain(newDomain)
                       setIsCustomChapter(false)
                       setIsCustomLesson(false)
+                      const dInfo = taxonomyData[newDomain] || CURRICULUM_TAXONOMY[newDomain]
+                      if (dInfo && dInfo.chapters && dInfo.chapters.length > 0) {
+                        const firstChap = dInfo.chapters[0].name
+                        setChapter(firstChap)
+                        if (dInfo.chapters[0].lessons && dInfo.chapters[0].lessons.length > 0) {
+                          setLesson(dInfo.chapters[0].lessons[0])
+                        }
+                      }
                     }}
                     className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-xs focus:border-blue-500 focus:outline-hidden bg-white"
                   >
@@ -860,7 +862,9 @@ export const CreateQuestionPage: React.FC = () => {
                 {/* Chapter Selector with Custom option */}
                 <div>
                   <div className="flex items-center justify-between">
-                    <label className="block text-xs font-semibold text-slate-700">Chapter</label>
+                    <label className="block text-xs font-semibold text-slate-700">
+                      Chapter <span className="text-rose-500 font-bold ml-0.5">* Required</span>
+                    </label>
                     <button
                       type="button"
                       onClick={() => setIsCustomChapter(!isCustomChapter)}
@@ -872,6 +876,7 @@ export const CreateQuestionPage: React.FC = () => {
                   {isCustomChapter ? (
                     <input
                       type="text"
+                      required
                       value={chapter}
                       onChange={(e) => setChapter(e.target.value)}
                       placeholder="Enter custom chapter name..."
@@ -880,9 +885,16 @@ export const CreateQuestionPage: React.FC = () => {
                   ) : (
                     <select
                       value={chapter}
+                      required
                       onChange={(e) => {
-                        setChapter(e.target.value)
+                        const newChapter = e.target.value
+                        setChapter(newChapter)
                         setIsCustomLesson(false)
+                        const dInfo = taxonomyData[domain] || CURRICULUM_TAXONOMY[domain]
+                        const matched = dInfo?.chapters?.find((c: any) => c.name === newChapter)
+                        if (matched && matched.lessons && matched.lessons.length > 0) {
+                          setLesson(matched.lessons[0])
+                        }
                       }}
                       className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-xs focus:border-blue-500 focus:outline-hidden bg-white"
                     >
@@ -902,7 +914,9 @@ export const CreateQuestionPage: React.FC = () => {
               {/* Lesson Selector with Custom option */}
               <div>
                 <div className="flex items-center justify-between">
-                  <label className="block text-xs font-semibold text-slate-700">Lesson</label>
+                  <label className="block text-xs font-semibold text-slate-700">
+                    Lesson <span className="text-rose-500 font-bold ml-0.5">* Required</span>
+                  </label>
                   <button
                     type="button"
                     onClick={() => setIsCustomLesson(!isCustomLesson)}
@@ -914,6 +928,7 @@ export const CreateQuestionPage: React.FC = () => {
                 {isCustomLesson ? (
                   <input
                     type="text"
+                    required
                     value={lesson}
                     onChange={(e) => setLesson(e.target.value)}
                     placeholder="Enter custom lesson name..."
@@ -922,6 +937,7 @@ export const CreateQuestionPage: React.FC = () => {
                 ) : (
                   <select
                     value={lesson}
+                    required
                     onChange={(e) => setLesson(e.target.value)}
                     className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-xs focus:border-blue-500 focus:outline-hidden bg-white"
                   >
@@ -949,7 +965,9 @@ export const CreateQuestionPage: React.FC = () => {
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700">Question Format</label>
+                  <label className="block text-xs font-semibold text-slate-700">
+                    Question Format <span className="text-rose-500 ml-0.5">*</span>
+                  </label>
                   <select
                     value={questionType}
                     onChange={(e) => setQuestionType(e.target.value as any)}
@@ -962,7 +980,9 @@ export const CreateQuestionPage: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700">Difficulty</label>
+                  <label className="block text-xs font-semibold text-slate-700">
+                    Difficulty <span className="text-rose-500 ml-0.5">*</span>
+                  </label>
                   <select
                     value={difficulty}
                     onChange={(e) => setDifficulty(e.target.value as any)}
@@ -975,9 +995,12 @@ export const CreateQuestionPage: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700">Target Exam</label>
+                  <label className="block text-xs font-semibold text-slate-700">
+                    Target Exam <span className="text-rose-500 ml-0.5">*</span>
+                  </label>
                   <input
                     type="text"
+                    required
                     value={targetExam}
                     onChange={(e) => setTargetExam(e.target.value)}
                     placeholder="e.g. EST 1 / SAT Math"
@@ -1016,19 +1039,25 @@ export const CreateQuestionPage: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700">Time Estimate (sec)</label>
+                  <label className="block text-xs font-semibold text-slate-700">
+                    Time Estimate (sec) <span className="text-rose-500 font-bold ml-0.5">* Required</span>
+                  </label>
                   <div className="relative mt-1">
                     <input
                       type="number"
-                      min="15"
-                      max="300"
+                      required
+                      min="10"
+                      max="600"
                       step="5"
                       value={estimatedSeconds}
-                      onChange={(e) => setEstimatedSeconds(Number(e.target.value))}
+                      onChange={(e) => setEstimatedSeconds(Math.max(10, Number(e.target.value) || 10))}
                       className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs focus:border-blue-500 focus:outline-hidden pl-8"
                     />
                     <Clock className="h-3.5 w-3.5 text-slate-400 absolute left-2.5 top-2.5" />
                   </div>
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    Mandatory: Recommended solving pacing (e.g. 90 sec for EST/SAT Math)
+                  </p>
                 </div>
               </div>
             </div>
@@ -1050,7 +1079,9 @@ export const CreateQuestionPage: React.FC = () => {
               />
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700">Problem Stem Text</label>
+                <label className="block text-xs font-semibold text-slate-700">
+                  Problem Stem Text <span className="text-rose-500 ml-0.5">*</span>
+                </label>
                 <textarea
                   ref={promptTextareaRef}
                   onFocus={() => {

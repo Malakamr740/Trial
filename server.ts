@@ -37,8 +37,13 @@ db.exec(`
     id TEXT PRIMARY KEY,
     subject TEXT,
     domain TEXT,
+    chapter TEXT,
+    lesson TEXT,
     topic TEXT,
     difficulty TEXT,
+    estimated_seconds INTEGER,
+    target_exam TEXT,
+    question_type TEXT,
     data TEXT NOT NULL,
     created_at TEXT,
     updated_at TEXT
@@ -101,6 +106,103 @@ db.exec(`
     updated_at TEXT
   );
 `);
+
+// Run robust SQLite column migrations and backfill existing question records
+function ensureQuestionsSchemaAndBackfill() {
+  try {
+    const tableInfo = db.prepare('PRAGMA table_info(questions)').all() as Array<{ name: string }>;
+    const existingCols = new Set(tableInfo.map((c) => c.name));
+
+    const columnsToAdd: Array<{ name: string; type: string; defaultVal: string }> = [
+      { name: 'subject', type: 'TEXT', defaultVal: "'Mathematics'" },
+      { name: 'domain', type: 'TEXT', defaultVal: "'Algebra & Functions'" },
+      { name: 'chapter', type: 'TEXT', defaultVal: "'Linear Equations & Systems'" },
+      { name: 'lesson', type: 'TEXT', defaultVal: "'Single-Variable Linear Equations'" },
+      { name: 'topic', type: 'TEXT', defaultVal: "'Linear Equations & Systems'" },
+      { name: 'difficulty', type: 'TEXT', defaultVal: "'medium'" },
+      { name: 'estimated_seconds', type: 'INTEGER', defaultVal: '90' },
+      { name: 'target_exam', type: 'TEXT', defaultVal: "'EST 1 / SAT Math'" },
+      { name: 'question_type', type: 'TEXT', defaultVal: "'multiple_choice'" },
+    ];
+
+    for (const col of columnsToAdd) {
+      if (!existingCols.has(col.name)) {
+        console.log(`[Database Migration] Adding missing column '${col.name}' to 'questions' table`);
+        db.exec(`ALTER TABLE questions ADD COLUMN ${col.name} ${col.type} DEFAULT ${col.defaultVal};`);
+      }
+    }
+
+    // Backfill all existing rows to eliminate ANY nulls or blank fields in database columns and JSON blob
+    const rows = db.prepare('SELECT id, data FROM questions').all() as Array<{ id: string; data: string }>;
+    const updateStmt = db.prepare(`
+      UPDATE questions
+      SET
+        subject = ?,
+        domain = ?,
+        chapter = ?,
+        lesson = ?,
+        topic = ?,
+        difficulty = ?,
+        estimated_seconds = ?,
+        target_exam = ?,
+        question_type = ?,
+        data = ?,
+        updated_at = ?
+      WHERE id = ?
+    `);
+
+    let backfilledCount = 0;
+    for (const row of rows) {
+      if (!row.data) continue;
+      try {
+        const q = JSON.parse(row.data);
+        const domain = (q.domain || 'Algebra & Functions').trim() || 'Algebra & Functions';
+        const chapter = (q.chapter || q.topic || 'Linear Equations & Systems').trim() || 'Linear Equations & Systems';
+        const lesson = (q.lesson || 'Single-Variable Linear Equations').trim() || 'Single-Variable Linear Equations';
+        const topic = (q.topic || chapter).trim() || chapter;
+        const subject = (q.subject || 'Mathematics').trim() || 'Mathematics';
+        const difficulty = (q.difficulty || 'medium').trim() || 'medium';
+        const estimatedSeconds = Math.max(10, Number(q.estimatedSeconds ?? q.estimated_seconds) || 90);
+        const targetExam = (q.targetExam || q.target_exam || 'EST 1 / SAT Math').trim() || 'EST 1 / SAT Math';
+        const questionType = (q.questionType || q.question_type || 'multiple_choice').trim() || 'multiple_choice';
+        const now = new Date().toISOString();
+
+        q.id = row.id;
+        q.subject = subject;
+        q.domain = domain;
+        q.chapter = chapter;
+        q.lesson = lesson;
+        q.topic = topic;
+        q.difficulty = difficulty;
+        q.estimatedSeconds = estimatedSeconds;
+        q.targetExam = targetExam;
+        q.questionType = questionType;
+
+        updateStmt.run(
+          subject,
+          domain,
+          chapter,
+          lesson,
+          topic,
+          difficulty,
+          estimatedSeconds,
+          targetExam,
+          questionType,
+          JSON.stringify(q),
+          q.updatedAt || now,
+          row.id
+        );
+        backfilledCount++;
+      } catch (parseErr) {
+        console.warn(`[Database Migration] Warning parsing row ${row.id}:`, parseErr);
+      }
+    }
+    console.log(`[Database Migration] Questions table verified and ${backfilledCount} row(s) checked/backfilled with zero nulls.`);
+  } catch (migErr) {
+    console.error('[Database Migration] Error verifying questions schema:', migErr);
+  }
+}
+ensureQuestionsSchemaAndBackfill();
 
 // -----------------------------------------------------------------------------
 // Database tables start empty - only user-saved data in database is returned
@@ -186,8 +288,37 @@ app.delete('/api/assessments/:id', (req: Request, res: Response) => {
 // -----------------------------------------------------------------------------
 app.get('/api/questions', (_req: Request, res: Response) => {
   try {
-    const rows = db.prepare('SELECT data FROM questions ORDER BY updated_at DESC').all() as Array<{ data: string }>;
-    const list = rows.map((r) => JSON.parse(r.data));
+    const rows = db.prepare(`
+      SELECT 
+        id, subject, domain, chapter, lesson, topic, difficulty, 
+        estimated_seconds, target_exam, question_type, data, created_at, updated_at 
+      FROM questions 
+      ORDER BY updated_at DESC
+    `).all() as Array<any>;
+
+    const list = rows.map((r) => {
+      let parsed: any = {};
+      try {
+        parsed = JSON.parse(r.data);
+      } catch {
+        parsed = {};
+      }
+      return {
+        ...parsed,
+        id: r.id,
+        subject: r.subject || parsed.subject || 'Mathematics',
+        domain: r.domain || parsed.domain || 'Algebra & Functions',
+        chapter: r.chapter || parsed.chapter || 'Linear Equations & Systems',
+        lesson: r.lesson || parsed.lesson || 'Single-Variable Linear Equations',
+        topic: r.topic || parsed.topic || r.chapter || 'Linear Equations & Systems',
+        difficulty: r.difficulty || parsed.difficulty || 'medium',
+        estimatedSeconds: r.estimated_seconds ?? parsed.estimatedSeconds ?? 90,
+        targetExam: r.target_exam || parsed.targetExam || 'EST 1 / SAT Math',
+        questionType: r.question_type || parsed.questionType || 'multiple_choice',
+        createdAt: r.created_at || parsed.createdAt,
+        updatedAt: r.updated_at || parsed.updatedAt,
+      };
+    });
     res.json(list);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -196,9 +327,37 @@ app.get('/api/questions', (_req: Request, res: Response) => {
 
 app.get('/api/questions/:id', (req: Request, res: Response) => {
   try {
-    const row = db.prepare('SELECT data FROM questions WHERE id = ?').get(req.params.id) as { data: string } | undefined;
+    const row = db.prepare(`
+      SELECT 
+        id, subject, domain, chapter, lesson, topic, difficulty, 
+        estimated_seconds, target_exam, question_type, data, created_at, updated_at 
+      FROM questions 
+      WHERE id = ?
+    `).get(req.params.id) as any;
+
     if (!row) return res.status(404).json({ error: 'Question not found' });
-    res.json(JSON.parse(row.data));
+    let parsed: any = {};
+    try {
+      parsed = JSON.parse(row.data);
+    } catch {
+      parsed = {};
+    }
+    const item = {
+      ...parsed,
+      id: row.id,
+      subject: row.subject || parsed.subject || 'Mathematics',
+      domain: row.domain || parsed.domain || 'Algebra & Functions',
+      chapter: row.chapter || parsed.chapter || 'Linear Equations & Systems',
+      lesson: row.lesson || parsed.lesson || 'Single-Variable Linear Equations',
+      topic: row.topic || parsed.topic || row.chapter || 'Linear Equations & Systems',
+      difficulty: row.difficulty || parsed.difficulty || 'medium',
+      estimatedSeconds: row.estimated_seconds ?? parsed.estimatedSeconds ?? 90,
+      targetExam: row.target_exam || parsed.targetExam || 'EST 1 / SAT Math',
+      questionType: row.question_type || parsed.questionType || 'multiple_choice',
+      createdAt: row.created_at || parsed.createdAt,
+      updatedAt: row.updated_at || parsed.updatedAt,
+    };
+    res.json(item);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -210,14 +369,66 @@ app.post('/api/questions', (req: Request, res: Response) => {
     const now = new Date().toISOString();
     const items = Array.isArray(payload) ? payload : [payload];
 
+    if (items.length === 0) {
+      return res.status(400).json({ error: 'No question data provided in request body' });
+    }
+
+    // MANDATORY VALIDATION:
+    // Every question must be linked to domain, chapter, lesson, time estimate (estimatedSeconds >= 10), and prompt stem
+    for (let i = 0; i < items.length; i++) {
+      const q = items[i];
+      if (!q || typeof q !== 'object') {
+        return res.status(400).json({ error: `Question at index ${i} is invalid or empty.` });
+      }
+
+      const domain = (q.domain || '').trim();
+      const chapter = (q.chapter || '').trim();
+      const lesson = (q.lesson || '').trim();
+      const prompt = (q.prompt || '').trim();
+      const estSec = Number(q.estimatedSeconds ?? q.estimated_seconds);
+
+      if (!domain) {
+        return res.status(400).json({
+          error: `Question ${q.id ? `"${q.id}"` : `#${i + 1}`} is missing mandatory 'domain'. Domain (Unit) is required.`,
+        });
+      }
+      if (!chapter) {
+        return res.status(400).json({
+          error: `Question ${q.id ? `"${q.id}"` : `#${i + 1}`} is missing mandatory 'chapter'. Chapter is required.`,
+        });
+      }
+      if (!lesson) {
+        return res.status(400).json({
+          error: `Question ${q.id ? `"${q.id}"` : `#${i + 1}`} is missing mandatory 'lesson'. Lesson is required.`,
+        });
+      }
+      if (!prompt) {
+        return res.status(400).json({
+          error: `Question ${q.id ? `"${q.id}"` : `#${i + 1}`} is missing mandatory 'prompt' stem.`,
+        });
+      }
+      if (isNaN(estSec) || estSec < 10) {
+        return res.status(400).json({
+          error: `Question ${q.id ? `"${q.id}"` : `#${i + 1}`} has invalid 'estimatedSeconds' (${q.estimatedSeconds}). Time estimate is mandatory and must be at least 10 seconds.`,
+        });
+      }
+    }
+
     const stmt = db.prepare(`
-      INSERT INTO questions (id, subject, domain, topic, difficulty, data, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO questions (
+        id, subject, domain, chapter, lesson, topic, difficulty, estimated_seconds, target_exam, question_type, data, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         subject = excluded.subject,
         domain = excluded.domain,
+        chapter = excluded.chapter,
+        lesson = excluded.lesson,
         topic = excluded.topic,
         difficulty = excluded.difficulty,
+        estimated_seconds = excluded.estimated_seconds,
+        target_exam = excluded.target_exam,
+        question_type = excluded.question_type,
         data = excluded.data,
         updated_at = excluded.updated_at
     `);
@@ -225,15 +436,43 @@ app.post('/api/questions', (req: Request, res: Response) => {
     db.exec('BEGIN TRANSACTION');
     try {
       for (const q of items) {
-        if (!q) continue;
         const qId = q.id || `qb-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
         q.id = qId;
+
+        const domain = q.domain.trim();
+        const chapter = q.chapter.trim();
+        const lesson = q.lesson.trim();
+        const topic = (q.topic || chapter).trim();
+        const subject = (q.subject || 'Mathematics').trim();
+        const difficulty = (q.difficulty || 'medium').trim();
+        const estSec = Math.max(10, Number(q.estimatedSeconds ?? q.estimated_seconds) || 90);
+        const targetExam = (q.targetExam || q.target_exam || 'EST 1 / SAT Math').trim();
+        const questionType = (q.questionType || q.question_type || 'multiple_choice').trim();
+
+        // Keep JSON data strictly aligned with database columns
+        q.domain = domain;
+        q.chapter = chapter;
+        q.lesson = lesson;
+        q.topic = topic;
+        q.subject = subject;
+        q.difficulty = difficulty;
+        q.estimatedSeconds = estSec;
+        q.targetExam = targetExam;
+        q.questionType = questionType;
+        q.updatedAt = now;
+        if (!q.createdAt) q.createdAt = now;
+
         stmt.run(
           qId,
-          q.subject || '',
-          q.domain || '',
-          q.topic || q.chapter || '',
-          q.difficulty || '',
+          subject,
+          domain,
+          chapter,
+          lesson,
+          topic,
+          difficulty,
+          estSec,
+          targetExam,
+          questionType,
           JSON.stringify(q),
           q.createdAt || now,
           now

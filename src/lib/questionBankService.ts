@@ -10,9 +10,11 @@ export interface QuestionChoice {
 export interface QuestionBankItem {
   id: string
   collection?: string
+  subject?: string
   domain: string
   chapter: string
   lesson: string
+  topic?: string
   difficulty: 'easy' | 'medium' | 'hard'
   questionType: 'multiple_choice' | 'multi_select' | 'grid_in'
   calculatorAllowed: boolean
@@ -605,6 +607,240 @@ if (typeof window !== 'undefined') {
 }
 
 // Service Helpers
+function getDomainCode(domain: string): string {
+  const norm = (domain || '').toLowerCase()
+  if (norm.includes('algebra')) return 'ALG'
+  if (norm.includes('geom') || norm.includes('measur')) return 'GEO'
+  if (norm.includes('numb') || norm.includes('quant')) return 'NUM'
+  if (norm.includes('stat') || norm.includes('prob')) return 'STAT'
+  return 'GEN'
+}
+
+async function resolveTaxonomyIds(
+  question: QuestionBankItem,
+  orgId: string | null
+): Promise<{
+  exam_id: string | null
+  subject_id: string | null
+  category_id: string | null
+  chapter_id: string | null
+  lesson_id: string | null
+  skill_id: string | null
+}> {
+  const result = {
+    exam_id: null as string | null,
+    subject_id: null as string | null,
+    category_id: null as string | null,
+    chapter_id: null as string | null,
+    lesson_id: null as string | null,
+    skill_id: null as string | null,
+  }
+
+  const examTarget = (question.targetExam || 'EST 1 / SAT Math').trim()
+  const domainTarget = (question.domain || 'Algebra & Functions').trim()
+  const chapterTarget = (question.chapter || 'Linear Equations & Systems').trim()
+  const lessonTarget = (question.lesson || 'Single-Variable Linear Equations').trim()
+  const domainCode = getDomainCode(domainTarget)
+
+  // 1. First attempt: RPC if provided by database
+  if (orgId) {
+    try {
+      const { data: taxData, error: taxError } = await supabase.rpc('resolve_or_create_taxonomy', {
+        p_org_id: orgId,
+        p_exam: examTarget,
+        p_subject: 'Mathematics',
+        p_category: domainTarget,
+        p_chapter: chapterTarget,
+        p_lesson: lessonTarget,
+        p_skill: null,
+      })
+      if (!taxError && Array.isArray(taxData) && taxData.length > 0 && taxData[0].category_id) {
+        return taxData[0]
+      }
+    } catch {}
+  }
+
+  // 2. Resolve Exam ID
+  try {
+    const { data: ex1 } = await supabase.from('exams').select('id').ilike('name', `%${examTarget}%`).limit(1).maybeSingle()
+    if (ex1?.id) {
+      result.exam_id = ex1.id
+    } else {
+      const { data: anyEx } = await supabase.from('exams').select('id').limit(1).maybeSingle()
+      if (anyEx?.id) {
+        result.exam_id = anyEx.id
+      } else {
+        const payload: any = { name: examTarget, code: 'EST', is_active: true }
+        if (orgId) payload.organization_id = orgId
+        const { data: insEx } = await supabase.from('exams').insert(payload).select('id').maybeSingle()
+        if (insEx?.id) result.exam_id = insEx.id
+      }
+    }
+  } catch (e) {
+    console.warn('[Taxonomy] Error resolving exam:', e)
+  }
+
+  // 3. Resolve Subject ID
+  try {
+    const { data: sb1 } = await supabase.from('subjects').select('id').ilike('name', '%Math%').limit(1).maybeSingle()
+    if (sb1?.id) {
+      result.subject_id = sb1.id
+    } else {
+      const { data: anySb } = await supabase.from('subjects').select('id').limit(1).maybeSingle()
+      if (anySb?.id) {
+        result.subject_id = anySb.id
+      } else {
+        const payload: any = { name: 'Mathematics', code: 'MATH', is_active: true }
+        if (result.exam_id) payload.exam_id = result.exam_id
+        if (orgId) payload.organization_id = orgId
+        const { data: insSb } = await supabase.from('subjects').insert(payload).select('id').maybeSingle()
+        if (insSb?.id) result.subject_id = insSb.id
+      }
+    }
+  } catch (e) {
+    console.warn('[Taxonomy] Error resolving subject:', e)
+  }
+
+  // 4. Resolve Category ID (Domain) - Handles prefixes like "[ALG] Algebra & Functions"
+  try {
+    const searchTerms = [domainTarget, domainTarget.split('&')[0].trim(), domainTarget.split(' ')[0].trim()]
+    let matchedCat: any = null
+
+    for (const term of searchTerms) {
+      if (!term) continue
+      const { data: cData } = await supabase.from('categories').select('id, name').ilike('name', `%${term}%`).limit(1).maybeSingle()
+      if (cData?.id) {
+        matchedCat = cData
+        break
+      }
+    }
+
+    if (!matchedCat && domainCode) {
+      const { data: cData } = await supabase.from('categories').select('id, name').ilike('name', `%${domainCode}%`).limit(1).maybeSingle()
+      if (cData?.id) matchedCat = cData
+    }
+
+    if (matchedCat?.id) {
+      result.category_id = matchedCat.id
+    } else {
+      const { data: anyCat } = await supabase.from('categories').select('id').limit(1).maybeSingle()
+      const payload: any = {
+        name: domainTarget,
+        code: domainCode,
+        is_active: true,
+      }
+      if (result.subject_id) payload.subject_id = result.subject_id
+      if (orgId) payload.organization_id = orgId
+      const { data: insCat } = await supabase.from('categories').insert(payload).select('id').maybeSingle()
+      result.category_id = insCat?.id || anyCat?.id || null
+    }
+  } catch (e) {
+    console.warn('[Taxonomy] Error resolving category:', e)
+  }
+
+  // 5. Resolve Chapter ID
+  try {
+    const searchTerms = [chapterTarget, chapterTarget.split('&')[0].trim(), chapterTarget.split(' ')[0].trim()]
+    let matchedChap: any = null
+
+    for (const term of searchTerms) {
+      if (!term) continue
+      let q = supabase.from('chapters').select('id, name').ilike('name', `%${term}%`)
+      if (result.category_id) q = q.eq('category_id', result.category_id)
+      const { data: chData } = await q.limit(1).maybeSingle()
+      if (chData?.id) {
+        matchedChap = chData
+        break
+      }
+    }
+
+    if (!matchedChap) {
+      for (const term of searchTerms) {
+        if (!term) continue
+        const { data: chData } = await supabase.from('chapters').select('id, name').ilike('name', `%${term}%`).limit(1).maybeSingle()
+        if (chData?.id) {
+          matchedChap = chData
+          break
+        }
+      }
+    }
+
+    if (matchedChap?.id) {
+      result.chapter_id = matchedChap.id
+    } else {
+      const payload: any = {
+        name: chapterTarget,
+        is_active: true,
+      }
+      if (result.category_id) payload.category_id = result.category_id
+      if (orgId) payload.organization_id = orgId
+      const { data: insChap } = await supabase.from('chapters').insert(payload).select('id').maybeSingle()
+      if (insChap?.id) {
+        result.chapter_id = insChap.id
+      } else {
+        let q = supabase.from('chapters').select('id')
+        if (result.category_id) q = q.eq('category_id', result.category_id)
+        const { data: anyChap } = await q.limit(1).maybeSingle()
+        result.chapter_id = anyChap?.id || null
+      }
+    }
+  } catch (e) {
+    console.warn('[Taxonomy] Error resolving chapter:', e)
+  }
+
+  // 6. Resolve Lesson ID
+  try {
+    const searchTerms = [lessonTarget, lessonTarget.split('(')[0].trim(), lessonTarget.split(' ')[0].trim()]
+    let matchedLesson: any = null
+
+    for (const term of searchTerms) {
+      if (!term) continue
+      let q = supabase.from('lessons').select('id, name').ilike('name', `%${term}%`)
+      if (result.chapter_id) q = q.eq('chapter_id', result.chapter_id)
+      const { data: lsData } = await q.limit(1).maybeSingle()
+      if (lsData?.id) {
+        matchedLesson = lsData
+        break
+      }
+    }
+
+    if (!matchedLesson) {
+      for (const term of searchTerms) {
+        if (!term) continue
+        const { data: lsData } = await supabase.from('lessons').select('id, name').ilike('name', `%${term}%`).limit(1).maybeSingle()
+        if (lsData?.id) {
+          matchedLesson = lsData
+          break
+        }
+      }
+    }
+
+    if (matchedLesson?.id) {
+      result.lesson_id = matchedLesson.id
+    } else {
+      const payload: any = {
+        name: lessonTarget,
+        is_active: true,
+      }
+      if (result.chapter_id) payload.chapter_id = result.chapter_id
+      if (orgId) payload.organization_id = orgId
+      const { data: insLs } = await supabase.from('lessons').insert(payload).select('id').maybeSingle()
+      if (insLs?.id) {
+        result.lesson_id = insLs.id
+      } else {
+        let q = supabase.from('lessons').select('id')
+        if (result.chapter_id) q = q.eq('chapter_id', result.chapter_id)
+        const { data: anyLs } = await q.limit(1).maybeSingle()
+        result.lesson_id = anyLs?.id || null
+      }
+    }
+  } catch (e) {
+    console.warn('[Taxonomy] Error resolving lesson:', e)
+  }
+
+  return result
+}
+
 export const questionBankService = {
   getStoredQuestions(): QuestionBankItem[] {
     if (!_hasLoadedQuestions && typeof window !== 'undefined') {
@@ -614,12 +850,24 @@ export const questionBankService = {
   },
 
   async saveQuestions(questions: QuestionBankItem[]): Promise<boolean> {
-    _questionsCache = questions
+    const sanitized = questions.map((q) => ({
+      ...q,
+      domain: (q.domain || 'Algebra & Functions').trim(),
+      chapter: (q.chapter || 'Linear Equations & Systems').trim(),
+      lesson: (q.lesson || 'Single-Variable Linear Equations').trim(),
+      estimatedSeconds: Math.max(10, Number(q.estimatedSeconds) || 90),
+      prompt: (q.prompt || 'Question Prompt').trim(),
+      subject: (q.subject || 'Mathematics').trim(),
+      difficulty: q.difficulty || 'medium',
+      targetExam: (q.targetExam || 'EST 1 / SAT Math').trim(),
+      questionType: q.questionType || 'multiple_choice',
+    }))
+    _questionsCache = sanitized
     try {
       const res = await fetch('/api/questions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(questions),
+        body: JSON.stringify(sanitized),
       })
       if (!res.ok) {
         console.error('Failed to save questions to database API:', res.status, await res.text())
@@ -636,75 +884,212 @@ export const questionBankService = {
    * Sync a question bank item to server SQLite database (and Supabase if configured)
    */
   async syncQuestionToDatabase(question: QuestionBankItem): Promise<boolean> {
+    const sanitized: QuestionBankItem = {
+      ...question,
+      domain: (question.domain || 'Algebra & Functions').trim(),
+      chapter: (question.chapter || 'Linear Equations & Systems').trim(),
+      lesson: (question.lesson || 'Single-Variable Linear Equations').trim(),
+      estimatedSeconds: Math.max(10, Number(question.estimatedSeconds) || 90),
+      prompt: (question.prompt || 'Question Prompt').trim(),
+      subject: (question.subject || 'Mathematics').trim(),
+      difficulty: question.difficulty || 'medium',
+      targetExam: (question.targetExam || 'EST 1 / SAT Math').trim(),
+      questionType: question.questionType || 'multiple_choice',
+    }
+
     try {
       const res = await fetch('/api/questions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify([question]),
+        body: JSON.stringify([sanitized]),
       })
       if (!res.ok) {
         const errorText = await res.text()
-        console.error('Database error saving question:', res.status, errorText)
-        throw new Error(`Failed to save question to database (HTTP ${res.status}): ${errorText}`)
+        console.error('Database error saving question to SQLite:', res.status, errorText)
+        throw new Error(`Failed to save question to server database (HTTP ${res.status}): ${errorText}`)
       }
     } catch (err: any) {
-      console.error('Notice saving question to database API:', err)
+      console.error('Notice saving question to SQLite API:', err)
       throw err
     }
 
     if (!isSupabaseConfigured) return true
+
     try {
-      // Build content blocks structure
+      // 1. Resolve Organization ID (required by Supabase schema)
+      let orgId: string | null = null
+      try {
+        const { data: orgData } = await supabase.from('organizations').select('id').limit(1).maybeSingle()
+        if (orgData?.id) orgId = orgData.id
+      } catch (e) {
+        console.warn('Could not query organization in Supabase:', e)
+      }
+
+      // 2. Resolve Answer Type ID (required foreign key in Supabase schema)
+      let answerTypeId: string | null = null
+      try {
+        const { data: answerTypes } = await supabase.from('answer_types').select('id, code')
+        if (Array.isArray(answerTypes) && answerTypes.length > 0) {
+          const typeMap = new Map<string, string>()
+          answerTypes.forEach((at) => typeMap.set(String(at.code).toUpperCase(), at.id))
+
+          let targetCode = 'MCQ'
+          if (question.questionType === 'grid_in') {
+            targetCode = 'GRID_IN'
+          } else if (question.questionType === 'multi_select') {
+            targetCode = typeMap.has('MULTI_SELECT') ? 'MULTI_SELECT' : 'MCQ'
+          }
+
+          answerTypeId = typeMap.get(targetCode) || answerTypes[0].id
+        }
+      } catch (e) {
+        console.warn('Could not query answer_types in Supabase:', e)
+      }
+
+      // 3. Resolve Question Set ID
+      let questionSetId: string | null = null
+      const setName = question.collection?.trim() || 'General Question Bank'
+      try {
+        const { data: existingSet } = await supabase
+          .from('question_sets')
+          .select('id')
+          .eq('title', setName)
+          .maybeSingle()
+        if (existingSet?.id) {
+          questionSetId = existingSet.id
+        } else if (orgId) {
+          const { data: newSet } = await supabase
+            .from('question_sets')
+            .insert({
+              organization_id: orgId,
+              title: setName,
+            })
+            .select('id')
+            .maybeSingle()
+          if (newSet?.id) questionSetId = newSet.id
+        }
+      } catch (e) {
+        console.warn('Could not resolve question_set in Supabase:', e)
+      }
+
+      // 4. Resolve Taxonomy IDs (exam_id, subject_id, category_id, chapter_id, lesson_id)
+      const taxIds = await resolveTaxonomyIds(sanitized, orgId)
+
+      // 5. Build Content Blocks
       const contentBlocks: any[] = []
-      if (question.imageUrl) {
+      if (sanitized.imageUrl) {
         contentBlocks.push({
           type: 'image',
-          url: question.imageUrl,
-          caption: question.imageCaption || '',
-          alt: question.imageCaption || 'Question figure',
+          url: sanitized.imageUrl,
+          caption: sanitized.imageCaption || '',
+          alt: sanitized.imageCaption || 'Question figure',
         })
       }
-      if (question.prompt) {
+      if (sanitized.prompt) {
         contentBlocks.push({
           type: 'text',
-          content: question.prompt,
+          content: sanitized.prompt,
         })
       }
 
-      const explanationBlocks: any[] = question.explanation
-        ? [{ type: 'text', content: question.explanation }]
+      const explanationBlocks: any[] = sanitized.explanation
+        ? [{ type: 'text', content: sanitized.explanation }]
         : []
 
-      // Is question ID already a valid UUID?
-      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(question.id)
+      // 6. Check UUID format
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sanitized.id)
+      const estSeconds = Math.max(10, Number(sanitized.estimatedSeconds) || 90)
 
-      const payload: any = {
-        difficulty: question.difficulty || 'medium',
+      const payload: Record<string, any> = {
+        difficulty: sanitized.difficulty || 'medium',
         points: 1,
         content_blocks: contentBlocks,
         explanation_blocks: explanationBlocks,
-      }
-      if (isUuid) {
-        payload.id = question.id
+        status: 'published',
+        estimated_seconds: estSeconds,
       }
 
-      const { data: qData, error: qError } = await supabase
-        .from('questions')
-        .upsert(payload)
-        .select('id')
-        .maybeSingle()
+      if (isUuid) payload.id = sanitized.id
+      if (orgId) payload.organization_id = orgId
+      if (answerTypeId) payload.answer_type_id = answerTypeId
+      if (questionSetId) payload.question_set_id = questionSetId
+      if (taxIds.exam_id) payload.exam_id = taxIds.exam_id
+      if (taxIds.subject_id) payload.subject_id = taxIds.subject_id
+      if (taxIds.category_id) payload.category_id = taxIds.category_id
+      if (taxIds.chapter_id) payload.chapter_id = taxIds.chapter_id
+      if (taxIds.lesson_id) payload.lesson_id = taxIds.lesson_id
+      if (taxIds.skill_id) payload.skill_id = taxIds.skill_id
 
-      if (!qError && qData && question.choices && question.choices.length > 0) {
-        const choiceRows = question.choices.map((c, idx) => ({
-          question_id: qData.id,
-          content_blocks: [{ type: 'text', content: c.text }],
-          is_correct: !!c.isCorrect,
-          display_order: idx,
-        }))
-        await supabase.from('question_choices').insert(choiceRows)
+      let qData: any = null
+      let qError: any = null
+
+      const res1 = await supabase.from('questions').upsert(payload).select('id').maybeSingle()
+      qData = res1.data
+      qError = res1.error
+
+      // If estimated_seconds column does not exist, try with time_limit_seconds or without
+      if (qError && qError.message && qError.message.includes('estimated_seconds')) {
+        delete payload.estimated_seconds
+        payload.time_limit_seconds = estSeconds
+        const res2 = await supabase.from('questions').upsert(payload).select('id').maybeSingle()
+        qData = res2.data
+        qError = res2.error
+        if (qError && qError.message && qError.message.includes('time_limit_seconds')) {
+          delete payload.time_limit_seconds
+          const res3 = await supabase.from('questions').upsert(payload).select('id').maybeSingle()
+          qData = res3.data
+          qError = res3.error
+        }
       }
-    } catch (err) {
-      console.warn('Notice syncing question to Supabase:', err)
+
+      if (qError) {
+        console.error('[Supabase Error] Failed to upsert question into questions table:', qError)
+        throw new Error(`Supabase database error: ${qError.message} (${qError.details || qError.hint || ''})`)
+      }
+
+      const targetQId = qData?.id || (isUuid ? question.id : null)
+      if (targetQId) {
+        if (question.questionType === 'grid_in') {
+          // Clean previous correct answers and insert
+          await supabase.from('question_correct_answers').delete().eq('question_id', targetQId)
+          await supabase.from('question_choices').delete().eq('question_id', targetQId)
+
+          const val = question.numericAnswer !== undefined && question.numericAnswer !== ''
+            ? (isNaN(Number(question.numericAnswer)) ? question.numericAnswer : Number(question.numericAnswer))
+            : 0
+
+          const { error: ansError } = await supabase.from('question_correct_answers').insert({
+            question_id: targetQId,
+            answer_data: {
+              value: val,
+              tolerance: Number(question.numericTolerance) || 0,
+            },
+          })
+          if (ansError) {
+            console.error('[Supabase Error] Failed to insert grid-in answer:', ansError)
+          }
+        } else if (question.choices && question.choices.length > 0) {
+          // Clean previous choices and insert
+          await supabase.from('question_choices').delete().eq('question_id', targetQId)
+          await supabase.from('question_correct_answers').delete().eq('question_id', targetQId)
+
+          const choiceRows = question.choices.map((c, idx) => ({
+            question_id: targetQId,
+            content_blocks: [{ type: 'text', content: c.text }],
+            is_correct: Boolean(c.isCorrect),
+            display_order: idx,
+          }))
+          const { error: choiceError } = await supabase.from('question_choices').insert(choiceRows)
+          if (choiceError) {
+            console.error('[Supabase Error] Failed to insert choices:', choiceError)
+          }
+        }
+      }
+
+      console.log(`[Supabase] Successfully synced question "${question.prompt.slice(0, 30)}..." (ID: ${targetQId}) to Supabase`)
+    } catch (err: any) {
+      console.error('[Supabase Sync Error]:', err)
+      throw err
     }
 
     return true
@@ -715,17 +1100,15 @@ export const questionBankService = {
       const res = await fetch(`/api/questions/${id}`, { method: 'DELETE' })
       if (!res.ok) {
         console.warn('Failed to delete question from server database:', res.status)
-        return false
       }
     } catch (err) {
       console.warn('Notice deleting question from database API:', err)
-      return false
     }
 
     if (!isSupabaseConfigured) return true
-    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
-    if (!isUuid) return true
     try {
+      await supabase.from('question_choices').delete().eq('question_id', id)
+      await supabase.from('question_correct_answers').delete().eq('question_id', id)
       await supabase.from('questions').delete().eq('id', id)
     } catch (err) {
       console.warn('Notice deleting question from Supabase:', err)
@@ -746,7 +1129,6 @@ export const questionBankService = {
         const data = await res.json()
         if (Array.isArray(data)) {
           _questionsCache = data
-          return _questionsCache
         }
       }
     } catch (err) {
@@ -754,7 +1136,7 @@ export const questionBankService = {
     }
 
     if (!isSupabaseConfigured) {
-      return this.getStoredQuestions()
+      return _questionsCache
     }
 
     try {
@@ -767,16 +1149,16 @@ export const questionBankService = {
           content_blocks,
           explanation_blocks,
           created_at,
-          question_choices ( id, content_blocks, is_correct, display_order )
+          question_choices ( id, content_blocks, is_correct, display_order ),
+          question_correct_answers ( id, answer_data )
         `)
         .order('created_at', { ascending: false })
 
-      if (error || !data || data.length === 0) {
-        return this.getStoredQuestions()
+      if (error || !Array.isArray(data) || data.length === 0) {
+        return _questionsCache
       }
 
-      const localList = this.getStoredQuestions()
-      const localMap = new Map(localList.map((q) => [q.id, q]))
+      const localMap = new Map(_questionsCache.map((q) => [q.id, q]))
 
       const mapped: QuestionBankItem[] = data.map((row: any) => {
         const existingLocal = localMap.get(row.id)
@@ -799,28 +1181,46 @@ export const questionBankService = {
           explanation = row.explanation_blocks.map((b: any) => b.content || '').join('\n\n')
         }
 
-        const choices: QuestionChoice[] = Array.isArray(row.question_choices)
-          ? row.question_choices.map((c: any, cIdx: number) => {
-              let text = ''
-              if (Array.isArray(c.content_blocks)) {
-                text = c.content_blocks.map((b: any) => b.content || '').join('')
-              }
-              return {
-                id: c.id || `c${cIdx + 1}`,
-                text: text || `Choice ${cIdx + 1}`,
-                isCorrect: Boolean(c.is_correct),
-              }
-            })
+        const choices: QuestionChoice[] = Array.isArray(row.question_choices) && row.question_choices.length > 0
+          ? row.question_choices
+              .sort((a: any, b: any) => (a.display_order ?? 0) - (b.display_order ?? 0))
+              .map((c: any, cIdx: number) => {
+                let text = ''
+                if (Array.isArray(c.content_blocks)) {
+                  text = c.content_blocks.map((b: any) => b.content || '').join('')
+                }
+                return {
+                  id: c.id || `c${cIdx + 1}`,
+                  text: text || `Choice ${cIdx + 1}`,
+                  isCorrect: Boolean(c.is_correct),
+                }
+              })
           : existingLocal?.choices || []
+
+        let numericAnswer = existingLocal?.numericAnswer || ''
+        let numericTolerance = existingLocal?.numericTolerance || '0'
+        if (Array.isArray(row.question_correct_answers) && row.question_correct_answers.length > 0) {
+          const ans = row.question_correct_answers[0]?.answer_data
+          if (ans) {
+            numericAnswer = String(ans.value ?? '')
+            numericTolerance = String(ans.tolerance ?? '0')
+          }
+        }
+
+        const questionType = choices.length > 0
+          ? 'multiple_choice'
+          : numericAnswer
+          ? 'grid_in'
+          : (existingLocal?.questionType || 'multiple_choice')
 
         return {
           id: String(row.id),
-          collection: existingLocal?.collection || 'Imported Database Questions',
+          collection: existingLocal?.collection || 'General Question Bank',
           domain: existingLocal?.domain || 'General Mathematics',
           chapter: existingLocal?.chapter || 'Core Concepts',
           lesson: existingLocal?.lesson || 'Topic Overview',
           difficulty: (row.difficulty || existingLocal?.difficulty || 'medium') as any,
-          questionType: (choices.length > 0 ? 'multiple_choice' : 'grid_in') as any,
+          questionType: questionType as any,
           calculatorAllowed: existingLocal?.calculatorAllowed ?? true,
           estimatedSeconds: existingLocal?.estimatedSeconds || 90,
           targetExam: existingLocal?.targetExam || 'General',
@@ -828,6 +1228,8 @@ export const questionBankService = {
           imageUrl: imageUrl || existingLocal?.imageUrl,
           imageCaption: imageCaption || existingLocal?.imageCaption,
           choices,
+          numericAnswer: numericAnswer || undefined,
+          numericTolerance: numericTolerance || undefined,
           explanation: explanation || existingLocal?.explanation || '',
           createdAt: row.created_at || existingLocal?.createdAt || new Date().toISOString(),
           updatedAt: new Date().toISOString(),
@@ -836,14 +1238,103 @@ export const questionBankService = {
 
       // Merge: keep local items not in remote
       const remoteIds = new Set(mapped.map((m) => m.id))
-      const remainingLocal = localList.filter((l) => !remoteIds.has(l.id))
+      const remainingLocal = _questionsCache.filter((l) => !remoteIds.has(l.id))
       const combined = [...mapped, ...remainingLocal]
 
-      this.saveQuestions(combined)
+      _questionsCache = combined
+
+      // Trigger automatic background backfill of any NULL taxonomy IDs in Supabase
+      this.backfillSupabaseQuestionsTaxonomy().catch((err) => {
+        console.warn('Notice running background Supabase taxonomy backfill:', err)
+      })
+
       return combined
     } catch (e) {
       console.warn('Error reading questions from Supabase:', e)
-      return this.getStoredQuestions()
+      return _questionsCache
+    }
+  },
+
+  /**
+   * Automatically repairs and links any Supabase questions that have null exam_id, subject_id, category_id, chapter_id, or lesson_id
+   */
+  async backfillSupabaseQuestionsTaxonomy(): Promise<{ updatedCount: number }> {
+    if (!isSupabaseConfigured) return { updatedCount: 0 }
+
+    try {
+      // Find all questions in Supabase where category_id, chapter_id, lesson_id, exam_id, or subject_id is null
+      const { data: nullQuestions, error } = await supabase
+        .from('questions')
+        .select('id, content_blocks, exam_id, subject_id, category_id, chapter_id, lesson_id')
+        .or('category_id.is.null,chapter_id.is.null,lesson_id.is.null,exam_id.is.null,subject_id.is.null')
+
+      if (error || !Array.isArray(nullQuestions) || nullQuestions.length === 0) {
+        return { updatedCount: 0 }
+      }
+
+      console.log(`[Supabase] Found ${nullQuestions.length} question(s) with null taxonomy IDs. Running automatic backfill...`)
+
+      let orgId: string | null = null
+      try {
+        const { data: orgData } = await supabase.from('organizations').select('id').limit(1).maybeSingle()
+        if (orgData?.id) orgId = orgData.id
+      } catch {}
+
+      const localQuestions = this.getStoredQuestions()
+      const localMap = new Map(localQuestions.map((q) => [String(q.id).trim(), q]))
+
+      let updatedCount = 0
+
+      for (const row of nullQuestions) {
+        const localQ = localMap.get(String(row.id).trim())
+
+        let promptText = ''
+        if (Array.isArray(row.content_blocks)) {
+          for (const b of row.content_blocks) {
+            if (b.type === 'text' && b.content) promptText += b.content + ' '
+          }
+        }
+
+        const matchedQ: QuestionBankItem = localQ || localQuestions.find((q) => promptText && promptText.includes(q.prompt.slice(0, 20))) || {
+          id: row.id,
+          domain: 'Algebra & Functions',
+          chapter: 'Linear Equations & Systems',
+          lesson: 'Single-Variable Linear Equations',
+          targetExam: 'EST 1 / SAT Math',
+          prompt: promptText || 'Math Question',
+          difficulty: 'medium',
+          questionType: 'multiple_choice',
+          calculatorAllowed: false,
+          estimatedSeconds: 90,
+          choices: [],
+          explanation: '',
+        }
+
+        const taxIds = await resolveTaxonomyIds(matchedQ, orgId)
+
+        const updates: any = {}
+        if (taxIds.exam_id) updates.exam_id = taxIds.exam_id
+        if (taxIds.subject_id) updates.subject_id = taxIds.subject_id
+        if (taxIds.category_id) updates.category_id = taxIds.category_id
+        if (taxIds.chapter_id) updates.chapter_id = taxIds.chapter_id
+        if (taxIds.lesson_id) updates.lesson_id = taxIds.lesson_id
+
+        if (Object.keys(updates).length > 0) {
+          const { error: updErr } = await supabase.from('questions').update(updates).eq('id', row.id)
+          if (!updErr) {
+            updatedCount++
+            console.log(`[Supabase] Successfully linked question ${row.id} to taxonomy IDs:`, updates)
+          } else {
+            console.warn(`[Supabase] Failed to update taxonomy for question ${row.id}:`, updErr)
+          }
+        }
+      }
+
+      console.log(`[Supabase] Successfully backfilled ${updatedCount} question(s) with mandatory taxonomy links.`)
+      return { updatedCount }
+    } catch (e) {
+      console.warn('[Supabase] Error running backfillSupabaseQuestionsTaxonomy:', e)
+      return { updatedCount: 0 }
     }
   },
 
